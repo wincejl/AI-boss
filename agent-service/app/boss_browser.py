@@ -8,7 +8,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from DrissionPage import ChromiumOptions, ChromiumPage
+try:
+    from DrissionPage import ChromiumOptions, ChromiumPage
+except ModuleNotFoundError:
+    ChromiumOptions = ChromiumPage = None
 
 
 @dataclass
@@ -28,11 +31,23 @@ _page: ChromiumPage | None = None
 _lock = threading.Lock()
 
 
+def _page_is_connected(page: ChromiumPage) -> bool:
+    try:
+        _ = page.url
+        return True
+    except Exception:
+        return False
+
+
 def get_page() -> ChromiumPage:
     global _page
+    if ChromiumOptions is None or ChromiumPage is None:
+        raise RuntimeError("DrissionPage is not installed; run pip install -r agent-service/requirements.txt")
     with _lock:
         if _page is not None:
-            return _page
+            if _page_is_connected(_page):
+                return _page
+            _page = None
         co = ChromiumOptions()
         co.set_argument("--start-maximized")
         # ponytail: controlled Chrome profile is enough for local demos; add explicit user-data-dir only if login persistence fails.
@@ -48,6 +63,16 @@ def open_boss_search() -> ChromiumPage:
         page.get(url)
         time.sleep(1.2)
     ensure_search_page(page, url)
+    return page
+
+
+def open_boss_chat() -> ChromiumPage:
+    page = get_page()
+    url = os.getenv("BOSS_CHAT_URL", "https://www.zhipin.com/web/chat/index")
+    current_url = str(page.url)
+    if "zhipin.com" not in current_url or "/web/chat/index" not in current_url:
+        page.get(url)
+        time.sleep(1.2)
     return page
 
 
@@ -101,6 +126,445 @@ def search_candidates(payload: BossSearchPayload) -> dict[str, Any]:
         "output": "; ".join([item for item in actions if item]),
         "snapshot": snapshot,
     }
+
+
+def read_candidates(limit: int = 10) -> dict[str, Any]:
+    limit = max(1, min(50, int(limit or 10)))
+    page = open_boss_search()
+    login_lines = page_snapshot(page)
+    if is_login_page(page, login_lines):
+        raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
+    time.sleep(0.6)
+    raw_cards = collect_candidate_cards(page, limit)
+    candidates = []
+    seen: set[str] = set()
+    for raw in raw_cards:
+        item = parse_boss_candidate(raw)
+        key = "|".join([item["name"], item["current_role"], item["location"], item["profile"][:80]])
+        if not item["name"] or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(item)
+        if len(candidates) >= limit:
+            break
+    return {
+        "ok": True,
+        "message": f"read {len(candidates)} BOSS candidates",
+        "candidates": candidates,
+    }
+
+
+def read_chats(limit: int = 20) -> dict[str, Any]:
+    limit = max(1, min(50, int(limit or 20)))
+    page = open_boss_chat()
+    login_lines = page_snapshot(page)
+    if is_login_page(page, login_lines):
+        raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
+    time.sleep(0.6)
+    chats = []
+    seen: set[str] = set()
+    for raw in collect_boss_chat_items(page, limit):
+        item = parse_boss_chat(raw)
+        key = item["key"]
+        if not item["name"] or key in seen:
+            continue
+        seen.add(key)
+        chats.append(item)
+        if len(chats) >= limit:
+            break
+    for item in chats:
+        item["messages"] = []
+        if click_boss_chat_item(page, item["name"], item["role"]):
+            time.sleep(0.4)
+            item["messages"] = collect_boss_chat_history(page, 40)
+    return {
+        "ok": True,
+        "message": f"read {len(chats)} BOSS chats",
+        "chats": chats,
+    }
+
+
+def send_chat_message(name: str, role: str = "", content: str = "") -> dict[str, Any]:
+    name = (name or "").strip()
+    role = (role or "").strip()
+    content = (content or "").strip()
+    if not name:
+        raise RuntimeError("BOSS chat target name is required")
+    if not content:
+        raise RuntimeError("BOSS message content is required")
+    page = open_boss_chat()
+    login_lines = page_snapshot(page)
+    if is_login_page(page, login_lines):
+        raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
+    if not click_boss_chat_item(page, name, role):
+        raise RuntimeError(f"BOSS chat not found in visible list: {name} {role}".strip())
+    time.sleep(0.5)
+    if not fill_boss_chat_input(page, content):
+        raise RuntimeError("BOSS chat input not found")
+    time.sleep(0.25)
+    if not press_boss_chat_enter(page) and not click_boss_send_button(page):
+        raise RuntimeError("BOSS send button not found or disabled")
+    time.sleep(0.8)
+    if boss_chat_input_text(page) == content:
+        raise RuntimeError("BOSS send button clicked but message stayed in input")
+    return {"ok": True, "message": "BOSS message sent", "target": f"{name} {role}".strip()}
+
+
+def click_boss_chat_item(page: ChromiumPage, name: str, role: str = "") -> bool:
+    return run_js_bool(
+        page,
+        """
+        const name = args[0];
+        const role = args[1];
+        const direct = all('.geek-item-wrap,.geek-item')
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => item.text.includes(name))
+          .filter(item => !role || item.text.includes(role))
+          .sort((a, b) => a.rect.top - b.rect.top || a.text.length - b.text.length)[0]?.el;
+        if (direct) {
+          const target = direct.closest('.geek-item-wrap') || direct;
+          target.scrollIntoView({ block: 'center', inline: 'center' });
+          target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+          target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+          target.click();
+          return true;
+        }
+        const maxLeft = Math.min(900, window.innerWidth * 0.5);
+        const candidates = all('li,article,section,div').filter(visible)
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => item.text.includes(name))
+          .filter(item => !role || item.text.includes(role))
+          .filter(item => item.rect.left < maxLeft)
+          .filter(item => item.rect.width >= 180 && item.rect.width <= 620)
+          .filter(item => item.rect.height >= 36 && item.rect.height <= 160)
+          .filter(item => item.text.length >= name.length && item.text.length <= 260)
+          .sort((a, b) => a.rect.top - b.rect.top || a.text.length - b.text.length);
+        const target = candidates[0]?.el;
+        if (!target) return false;
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+        (target.closest('li') || target).click();
+        return true;
+        """,
+        name,
+        role,
+    )
+
+
+def fill_boss_chat_input(page: ChromiumPage, content: str) -> bool:
+    return run_js_bool(
+        page,
+        """
+        const text = args[0];
+        const inputs = all('textarea,[contenteditable="true"],input[type="text"],input:not([type])').filter(visible)
+          .map(el => ({ el, rect: el.getBoundingClientRect(), ph: el.getAttribute('placeholder') || '' }))
+          .filter(item => item.rect.top > window.innerHeight * 0.55)
+          .filter(item => !/搜索|search/i.test(item.ph))
+          .sort((a, b) => b.rect.bottom - a.rect.bottom || b.rect.width - a.rect.width);
+        const target = inputs[0]?.el;
+        if (!target) return false;
+        target.focus();
+        if (target.isContentEditable) {
+          const doc = target.ownerDocument;
+          const selection = doc.getSelection();
+          const range = doc.createRange();
+          range.selectNodeContents(target);
+          if (selection) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          doc.execCommand('insertText', false, text);
+          target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+        } else {
+          setInputValue(target, text);
+        }
+        return true;
+        """,
+        content,
+    )
+
+
+def click_boss_send_button(page: ChromiumPage) -> bool:
+    return run_js_bool(
+        page,
+        """
+        const target = [...document.querySelectorAll('.submit-content')]
+          .filter(visible)
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect(), cls: String(el.className || '') }))
+          .filter(item => item.text === '发送')
+          .filter(item => item.rect.top > window.innerHeight * 0.7 && item.rect.left > window.innerWidth * 0.55)
+          .sort((a, b) => b.rect.top - a.rect.top)[0]?.el;
+        if (!target) return false;
+        const button = target.querySelector('.submit.active') || target;
+        if (/disabled|disable/.test(String(button.className || ''))) return false;
+        for (const type of ['mousedown', 'mouseup', 'click']) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+        target.click();
+        return true;
+        """,
+    )
+
+
+def press_boss_chat_enter(page: ChromiumPage) -> bool:
+    return run_js_bool(
+        page,
+        """
+        const input = document.querySelector('#boss-chat-editor-input,[contenteditable="true"].boss-chat-editor-input');
+        if (!input) return false;
+        input.focus();
+        for (const type of ['keydown', 'keypress', 'keyup']) {
+          input.dispatchEvent(new KeyboardEvent(type, {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true
+          }));
+        }
+        return true;
+        """,
+    )
+
+
+def boss_chat_input_text(page: ChromiumPage) -> str:
+    try:
+        return str(page.run_js("""
+        const input = document.querySelector('#boss-chat-editor-input,[contenteditable="true"].boss-chat-editor-input');
+        return (input?.innerText || input?.textContent || '').trim();
+        """) or "").strip()
+    except Exception:
+        return ""
+
+
+def collect_boss_chat_items(page: ChromiumPage, limit: int) -> list[str]:
+    script = f"""
+    return (function(limit) {{
+      function cleanText(value) {{ return String(value || '').replace(/\\s+/g, '\\n').replace(/\\n+/g, '\\n').trim(); }}
+      function docs() {{
+        const found = [document];
+        for (const frame of document.querySelectorAll('iframe')) {{
+          try {{ if (frame.contentDocument) found.push(frame.contentDocument); }} catch (e) {{}}
+        }}
+        return found;
+      }}
+      function visible(el) {{
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+      }}
+      const blacklist = /全部职位|全部\\n未读|新招呼|沟通中|已约面|已获取简历|已交换电话|已交换微信|收藏|更多|在线简历|附件简历|求简历|换电话|换微信|约面试/;
+      const candidates = docs().flatMap(doc => [...doc.querySelectorAll('li,article,section,div')])
+        .filter(visible)
+        .map(el => {{
+          const rect = el.getBoundingClientRect();
+          const text = cleanText(el.innerText || el.textContent);
+          return {{ text, lines: text.split('\\n').filter(Boolean), top: rect.top, left: rect.left, width: rect.width, height: rect.height, area: rect.width * rect.height }};
+        }})
+        .filter(item => item.text.length >= 6 && item.text.length <= 260)
+        .filter(item => item.lines.length >= 2 && item.lines.length <= 5)
+        .filter(item => item.width >= 220 && item.width <= 620 && item.height >= 44 && item.height <= 130)
+        .filter(item => item.left < Math.min(900, window.innerWidth * 0.48))
+        .filter(item => !blacklist.test(item.text))
+        .filter(item => !/\\d{{2}}岁|期望\\n|职位\\n|在线简历|附件简历/.test(item.text))
+        .filter(item => /\\[已读\\]|\\[未读\\]|\\d{{1,2}}:\\d{{2}}|昨天|\\d{{2}}月\\d{{2}}日/.test(item.text))
+        .sort((a, b) => a.top - b.top || a.left - b.left || a.area - b.area);
+      const out = [];
+      const keys = new Set();
+      for (const item of candidates) {{
+        const key = item.text.replace(/\\n/g, ' ').slice(0, 90);
+        if (keys.has(key)) continue;
+        if (out.some(text => text.includes(item.text) || item.text.includes(text))) continue;
+        keys.add(key);
+        out.push(item.text);
+        if (out.length >= limit) break;
+      }}
+      return out;
+    }})({limit});
+    """
+    try:
+        raw = page.run_js(script) or []
+    except Exception:
+        raw = []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def collect_boss_chat_history(page: ChromiumPage, limit: int = 40) -> list[dict[str, str]]:
+    script = f"""
+    return (function(limit) {{
+      function cleanText(value) {{ return String(value || '').replace(/\\s+/g, ' ').trim(); }}
+      const items = [...document.querySelectorAll('.message-item')]
+        .map(el => {{
+          const mine = el.querySelector('.item-myself');
+          const friend = el.querySelector('.item-friend');
+          const bubble = el.querySelector('.item-myself .text-content') ||
+            el.querySelector('.item-friend .text-content') ||
+            el.querySelector('.item-myself .text') ||
+            el.querySelector('.item-friend .text');
+          return {{
+            sender: mine ? 'agent' : (friend ? 'candidate' : ''),
+            content: cleanText(bubble?.innerText || bubble?.textContent || '').replace(/^(已读|送达)\\s+/, ''),
+            time_text: cleanText(el.querySelector('.message-time')?.innerText || '')
+          }};
+        }})
+        .filter(item => item.sender && item.content);
+      const out = [];
+      const seen = new Set();
+      for (const item of items) {{
+        const key = item.sender + '|' + item.content;
+        if (seen.has(key)) continue;
+        if (out.some(old => old.content === item.content && old.sender === item.sender)) continue;
+        seen.add(key);
+        out.push(item);
+        if (out.length >= limit) break;
+      }}
+      return out;
+    }})({limit});
+    """
+    try:
+        raw = page.run_js(script) or []
+    except Exception:
+        raw = []
+    messages: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "")).strip()
+        sender = str(item.get("sender", "")).strip()
+        if content:
+            messages.append({"sender": sender, "content": content, "time_text": str(item.get("time_text", "")).strip()})
+    return messages
+
+
+def parse_boss_chat(raw: str) -> dict[str, str]:
+    text = normalize_card_text(raw)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    cleaned = [re.sub(r"^\[(已读|未读)\]\s*", "", line).strip() for line in lines]
+    time_text = next((line for line in cleaned if re.fullmatch(r"\d{1,2}:\d{2}|昨天|\d{2}月\d{2}日|\d{4}\.\d{2}\.\d{2}", line)), "")
+    body = [line for line in cleaned if line and line != time_text]
+    name, role, last_message = "", "", ""
+    if len(body) >= 3 and not re.search(r"\s", body[0]):
+        name, role = body[0], body[1]
+        last_message = " ".join(body[2:])
+    elif body:
+        info = re.sub(r"\s*\d{1,2}:\d{2}$", "", body[0]).strip()
+        parts = [part for part in re.split(r"\s+", info, maxsplit=1) if part]
+        name = parts[0] if parts else ""
+        role = parts[1] if len(parts) > 1 else ""
+        last_message = body[1] if len(body) > 1 else ""
+    if not re.fullmatch(r"[\u4e00-\u9fa5A-Za-z*]{1,12}", name or ""):
+        name = ""
+    key = "|".join([name, role])
+    return {
+        "key": key,
+        "name": name,
+        "role": role,
+        "last_message": last_message,
+        "time_text": time_text,
+        "profile": "\n".join(lines[:8]),
+    }
+
+
+def collect_candidate_cards(page: ChromiumPage, limit: int) -> list[str]:
+    script = f"""
+    return (function(limit) {{
+      function cleanText(value) {{ return String(value || '').replace(/\\s+/g, '\\n').replace(/\\n+/g, '\\n').trim(); }}
+      function docs() {{
+        const found = [document];
+        for (const frame of document.querySelectorAll('iframe')) {{
+          try {{ if (frame.contentDocument) found.push(frame.contentDocument); }} catch (e) {{}}
+        }}
+        return found;
+      }}
+      function visible(el) {{
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+      }}
+      function cardKey(text) {{
+        const hit = text.match(/([\\u4e00-\\u9fa5A-Za-z·*]{{1,12}})[\\s\\S]{{0,80}}?(\\d{{2}})\\s*岁/);
+        return hit ? `${{hit[1]}}-${{hit[2]}}` : text.slice(0, 60);
+      }}
+      const blacklist = /学历要求|年龄要求|推荐筛选|更多筛选|筛选说明|请选择专业|开启AI搜索|综合排序|匹配度优先/;
+      const nodes = docs().flatMap(doc => [...doc.querySelectorAll('article,section,li,div')]);
+      const cards = nodes
+        .filter(visible)
+        .map(el => {{
+          const rect = el.getBoundingClientRect();
+          return {{ text: cleanText(el.innerText || el.textContent), top: rect.top, left: rect.left, area: rect.width * rect.height, width: rect.width, height: rect.height }};
+        }})
+        .filter(item => item.text.length >= 35 && item.text.length <= 1200)
+        .filter(item => item.width >= 360 && item.height >= 70 && item.height <= 420)
+        .filter(item => /\\d{{2}}\\s*岁/.test(item.text))
+        .filter(item => /K|经验|应届|离职|到岗|期望|职位|学校|院校|活跃/.test(item.text))
+        .filter(item => !blacklist.test(item.text))
+        .sort((a, b) => a.top - b.top || b.area - a.area);
+      const out = [];
+      const keys = new Set();
+      for (const card of cards) {{
+        const key = cardKey(card.text);
+        if (keys.has(key)) continue;
+        if (out.some(item => item.includes(card.text) || card.text.includes(item))) continue;
+        keys.add(key);
+        out.push(card.text);
+        if (out.length >= limit) break;
+      }}
+      return out;
+    }})({limit});
+    """
+    try:
+        raw = page.run_js(script) or []
+    except Exception:
+        raw = []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def parse_boss_candidate(raw: str) -> dict[str, str]:
+    text = normalize_card_text(raw)
+    lines = [line.strip(" |｜\t") for line in text.splitlines() if line.strip(" |｜\t")]
+    summary = next((line for line in lines if re.search(r"\d{2}\s*岁", line)), "")
+    name = parse_candidate_name(lines, text)
+    location = parse_candidate_label(text, ["期望城市", "期望"])
+    current_role = parse_candidate_label(text, ["职位", "当前职位", "最近职位"])
+    if not current_role and summary:
+        current_role = " | ".join(split_card_parts(summary)[1:3])
+    tags = ", ".join(split_card_parts(summary)[1:])
+    return {
+        "name": name,
+        "source": "BOSS",
+        "current_role": current_role,
+        "location": location,
+        "tags": tags,
+        "profile": "\n".join(lines[:18]),
+    }
+
+
+def normalize_card_text(raw: str) -> str:
+    return re.sub(r"\n{2,}", "\n", re.sub(r"[ \t]+", " ", raw or "")).strip()
+
+
+def parse_candidate_name(lines: list[str], text: str) -> str:
+    for line in lines[:4]:
+        hit = re.match(r"^([\u4e00-\u9fa5A-Za-z·*]{1,12})", line)
+        if hit and not any(word in hit.group(1) for word in ["搜索", "筛选", "学历", "年龄"]):
+            return hit.group(1)
+    hit = re.search(r"([\u4e00-\u9fa5A-Za-z·*]{1,12})[\s\S]{0,80}?\d{2}\s*岁", text)
+    return hit.group(1) if hit else ""
+
+
+def parse_candidate_label(text: str, labels: list[str]) -> str:
+    for label in labels:
+        hit = re.search(rf"{label}\s*[:：]?\s*([^\n]+)", text)
+        if hit:
+            value = hit.group(1).strip(" ·|｜")
+            if label.startswith("期望"):
+                return re.split(r"\s*[·|｜]\s*", value, maxsplit=1)[0].strip()
+            return value
+    return ""
+
+
+def split_card_parts(line: str) -> list[str]:
+    return [item.strip() for item in re.split(r"\s*[|｜]\s*", line or "") if item.strip()]
 
 
 def snapshot() -> dict[str, Any]:
@@ -545,7 +1009,8 @@ def run_js_bool(page: ChromiumPage, body: str, *args: Any) -> bool:
       function searchDoc() {{ return docs().find(doc => doc.querySelector('.search-part-container, input.search-input')) || document; }}
       function setInputValue(input, value) {{
         const win = input.ownerDocument.defaultView || window;
-        const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')?.set;
+        const proto = input instanceof win.HTMLTextAreaElement ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
         if (setter) setter.call(input, value); else input.value = value;
         input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
         input.dispatchEvent(new Event('change', {{ bubbles: true }}));

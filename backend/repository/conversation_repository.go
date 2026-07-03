@@ -29,6 +29,17 @@ func (r *ConversationRepository) FindOpenByVisitorID(visitorID uint) (*models.Co
 	return &conv, nil
 }
 
+func (r *ConversationRepository) FindOpenByReferrer(referrer string) (*models.Conversation, error) {
+	var conv models.Conversation
+	err := r.db.Where("conversation_type = ? AND referrer = ? AND status != ?", "visitor", referrer, "closed").
+		Order("created_at desc").
+		First(&conv).Error
+	if err != nil {
+		return nil, err
+	}
+	return &conv, nil
+}
+
 // ListActiveInternalByAgentID 返回某客服的全部未关闭内部对话（知识库测试用）。
 func (r *ConversationRepository) ListActiveInternalByAgentID(agentID uint) ([]models.Conversation, error) {
 	var list []models.Conversation

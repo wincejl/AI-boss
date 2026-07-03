@@ -41,6 +41,7 @@ import {
   fetchRecruitmentRequirements,
   fetchRecruitmentTimeline,
   generateRecruitmentDraft,
+  importBossCandidates,
   runRecruitmentAgent,
   saveBossAssistantConfig,
   searchBossCandidates,
@@ -80,6 +81,7 @@ const EDUCATION_OPTIONS = ["不限", "本科及以上", "硕士及以上", "博�
 const EDUCATION_LEVELS = ["初中及以下", "中专/中技", "高中", "大专", "本科", "硕士", "博士"];
 const AGE_OPTIONS = ["不限", "20-25", "25-30", "30-35", "35-40", "40-50", "50以上", "自定义"];
 const SORT_OPTIONS = ["综合排序", "活跃优先", "匹配度优先"];
+const CANDIDATE_BATCH_OPTIONS = [5, 10, 20, 30, 50];
 const RECOMMENDED_FILTER_FIELDS = [
   { key: "school", label: "院校要求", options: ["不限", "统招本科", "双一流院校", "211院校", "985院校", "留学生"] },
   { key: "experience", label: "经验要求", options: ["不限", "在校/应届", "25年毕业", "26年毕业", "26年后毕业", "1-3年", "3-5年", "5-10年"] },
@@ -437,6 +439,7 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
   const [checkingBoss, setCheckingBoss] = useState(false);
   const [savingBossPath, setSavingBossPath] = useState(false);
   const [clickingBossMenu, setClickingBossMenu] = useState<BossMenu | null>(null);
+  const [syncingBossCandidates, setSyncingBossCandidates] = useState(false);
   const [majorDialogOpen, setMajorDialogOpen] = useState(false);
   const [majorCategory, setMajorCategory] = useState(MAJOR_OPTIONS[0].category);
   const [majorGroup, setMajorGroup] = useState(MAJOR_OPTIONS[0].groups[0].name);
@@ -645,16 +648,40 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
       setSelectedRequirementId(created.id);
       try {
         await searchBossCandidates(payload);
+        await syncBossCandidates(created.id, payload.batch_size);
         void loadBossStatus();
         toast.success("BOSS search synced");
       } catch (bossError) {
-        toast.error(`BOSS search sync failed: ${(bossError as Error).message}`);
+        toast.error(`BOSS同步失败: ${(bossError as Error).message}`);
       }
       toast.success("招聘需求已创建");
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
       setSavingRequirement(false);
+    }
+  }
+
+  async function syncBossCandidates(requirementId: number, limit: number) {
+    try {
+      setSyncingBossCandidates(true);
+      const result = await importBossCandidates(requirementId, limit);
+      await loadCandidates(requirementId);
+      toast.success(`BOSS候选人已同步：新增 ${result.imported}，跳过 ${result.skipped}`);
+    } finally {
+      setSyncingBossCandidates(false);
+    }
+  }
+
+  async function handleSyncBossCandidates() {
+    if (!selectedRequirement) {
+      toast.error("请先选择招聘需求");
+      return;
+    }
+    try {
+      await syncBossCandidates(selectedRequirement.id, selectedRequirement.batch_size);
+    } catch (error) {
+      toast.error((error as Error).message);
     }
   }
 
@@ -1117,19 +1144,19 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                       </option>
                     ))}
                   </select>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={50}
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
                     value={requirementForm.batch_size}
                     onChange={(event) =>
-                      setRequirementForm((prev) => ({
-                        ...prev,
-                        batch_size: Math.min(50, Math.max(1, Number(event.target.value) || 10)),
-                      }))
+                      setRequirementForm((prev) => ({ ...prev, batch_size: Number(event.target.value) || 10 }))
                     }
-                    placeholder="每次抓取数量"
-                  />
+                  >
+                    {CANDIDATE_BATCH_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        同步候选人：{item}个
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="grid gap-2 rounded-md border bg-background p-2 sm:grid-cols-2">
                   <div className="text-xs font-medium text-muted-foreground sm:col-span-2">推荐筛选 / 更多筛选</div>
@@ -1265,9 +1292,20 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                   <span className="truncate">{selectedRequirement?.title ?? "候选人池"}</span>
                 </span>
                 {selectedRequirement && (
-                  <Button variant="outline" size="sm" onClick={() => void handlePauseRequirement(selectedRequirement)}>
-                    {selectedRequirement.status === "active" ? "暂停" : "恢复"}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleSyncBossCandidates()}
+                      disabled={syncingBossCandidates}
+                    >
+                      {syncingBossCandidates ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      同步BOSS候选人
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => void handlePauseRequirement(selectedRequirement)}>
+                      {selectedRequirement.status === "active" ? "暂停" : "恢复"}
+                    </Button>
+                  </div>
                 )}
               </CardTitle>
             </CardHeader>

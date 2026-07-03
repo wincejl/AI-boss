@@ -18,6 +18,7 @@ import (
 type MessageController struct {
 	messageService      *service.MessageService
 	conversationService *service.ConversationService
+	bossAssistant       *service.BossAssistantService
 	userService         *service.UserService
 	storageService      infra.StorageService
 }
@@ -26,12 +27,14 @@ type MessageController struct {
 func NewMessageController(
 	messageService *service.MessageService,
 	conversationService *service.ConversationService,
+	bossAssistant *service.BossAssistantService,
 	userService *service.UserService,
 	storageService infra.StorageService,
 ) *MessageController {
 	return &MessageController{
 		messageService:      messageService,
 		conversationService: conversationService,
+		bossAssistant:       bossAssistant,
 		userService:         userService,
 		storageService:      storageService,
 	}
@@ -62,6 +65,7 @@ func (mc *MessageController) CreateMessage(c *gin.Context) {
 		return
 	}
 	userID := getUserIDFromHeader(c)
+	var detail *service.ConversationDetail
 	// 兼容 demo 自测场景：已登录客服也允许按访客身份发送消息（sender_is_agent=false）。
 	// 访客消息 sender_id 仍由服务端强制置 0，避免前端注入身份。
 	// 客服消息必须绑定当前登录用户（X-User-Id），并以服务端用户 ID 为准，避免伪造 sender_id。
@@ -75,7 +79,8 @@ func (mc *MessageController) CreateMessage(c *gin.Context) {
 			// 按会话类型进行权限校验：
 			// - visitor 会话：需要 chat 权限
 			// - internal 会话：需要 kb_test 权限，且仅会话创建者可发送
-			detail, err := mc.conversationService.GetConversationDetail(req.ConversationID, userID)
+			var err error
+			detail, err = mc.conversationService.GetConversationDetail(req.ConversationID, userID)
 			if err != nil {
 				c.JSON(http.StatusForbidden, gin.H{"error": "无权限访问该会话"})
 				return
@@ -105,6 +110,34 @@ func (mc *MessageController) CreateMessage(c *gin.Context) {
 	if req.Content == "" && req.FileURL == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "消息内容或文件不能同时为空"})
 		return
+	}
+
+	if req.SenderIsAgent && detail == nil && mc.conversationService != nil {
+		detail, _ = mc.conversationService.GetConversationDetail(req.ConversationID, userID)
+	}
+	if req.SenderIsAgent && detail != nil && strings.HasPrefix(detail.Referrer, "boss://chat/") {
+		if req.FileURL != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "BOSS同步发送暂只支持文本消息"})
+			return
+		}
+		name, role := service.BossChatTargetFromNotes(detail.Notes)
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "BOSS候选人信息缺失，请先同步BOSS沟通列表"})
+			return
+		}
+		if mc.bossAssistant == nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "BOSS同步服务未启用"})
+			return
+		}
+		if _, err := mc.bossAssistant.SendChatMessage(service.BossChatMessageInput{
+			Name:    name,
+			Role:    role,
+			Content: strings.TrimSpace(req.Content),
+		}); err != nil {
+			log.Printf("BOSS message sync failed: conversation=%d target=%s role=%s err=%v", req.ConversationID, name, role, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "BOSS同步发送失败: " + err.Error()})
+			return
+		}
 	}
 
 	msg, err := mc.messageService.CreateMessage(service.CreateMessageInput{

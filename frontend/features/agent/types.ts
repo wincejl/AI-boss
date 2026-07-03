@@ -15,6 +15,9 @@ export interface ConversationSummary {
   agent_id: number;
   status: string;
   chat_mode?: string;
+  website?: string;
+  referrer?: string;
+  notes?: string;
   created_at: string;
   updated_at: string;
   last_message?: LastMessage;
@@ -102,4 +105,3 @@ export type ChatWebSocketPayload =
   | MessagesReadPayload
   | VisitorStatusUpdatePayload
   | TypingDraftPayload;
-

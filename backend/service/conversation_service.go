@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"strings"
 	"time"
 
@@ -119,11 +121,11 @@ func (s *ConversationService) InitConversation(input InitConversationInput) (*In
 			}
 			if s.systemLogSvc != nil {
 				_ = s.systemLogSvc.Create(CreateSystemLogInput{
-					Level:    "info",
-					Category: "business",
-					Event:    "conversation_created",
-					Source:   "backend",
-					Message:  "访客会话已创建",
+					Level:          "info",
+					Category:       "business",
+					Event:          "conversation_created",
+					Source:         "backend",
+					Message:        "访客会话已创建",
 					ConversationID: &conv.ID,
 					VisitorID:      &input.VisitorID,
 					Meta: map[string]interface{}{
@@ -328,6 +330,251 @@ func (s *ConversationService) UpdateConversationContact(input UpdateConversation
 	return s.GetConversationDetail(input.ConversationID, 0)
 }
 
+type ImportBossChatInput struct {
+	Key         string
+	Name        string
+	Role        string
+	LastMessage string
+	TimeText    string
+	Profile     string
+	Messages    []BossChatHistoryMessage
+}
+
+type ImportBossChatsResult struct {
+	Conversations []ConversationSummary
+	Imported      int
+	Updated       int
+	Skipped       int
+}
+
+func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, ownerID uint) (*ImportBossChatsResult, error) {
+	result := &ImportBossChatsResult{Conversations: []ConversationSummary{}}
+	for _, item := range items {
+		name := cleanText(item.Name)
+		if name == "" {
+			result.Skipped++
+			continue
+		}
+		role := cleanText(item.Role)
+		lastMessage := cleanText(item.LastMessage)
+		key := cleanText(item.Key)
+		if key == "" {
+			key = strings.Join([]string{name, role, lastMessage}, "|")
+		}
+		referrer := "boss://chat/" + fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(key)))
+		now := time.Now()
+		notes := buildBossChatNotes(name, role, item.Profile)
+		conv, err := s.conversations.FindOpenByReferrer(referrer)
+		isNew := false
+		if err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+			conv = &models.Conversation{
+				ConversationType: "visitor",
+				VisitorID:        bossChatVisitorID(referrer),
+				AgentID:          ownerID,
+				Status:           "open",
+				Website:          "BOSS直聘",
+				Referrer:         referrer,
+				Browser:          "BOSS Web",
+				OS:               "Windows",
+				Language:         "zh-CN",
+				Notes:            notes,
+				LastSeenAt:       &now,
+				ChatMode:         "human",
+			}
+			if err := s.conversations.Create(conv); err != nil {
+				return nil, err
+			}
+			isNew = true
+		} else {
+			_ = s.conversations.UpdateFields(conv.ID, map[string]interface{}{
+				"agent_id":     defaultUint(ownerID, conv.AgentID),
+				"website":      "BOSS直聘",
+				"notes":        notes,
+				"last_seen_at": &now,
+				"updated_at":   now,
+			})
+		}
+
+		if len(item.Messages) > 0 {
+			if err := s.importBossChatHistory(conv.ID, ownerID, item.Messages); err != nil {
+				return nil, err
+			}
+		} else {
+			messageContent := buildBossChatMessage(name, role, lastMessage, item.TimeText)
+			latest, _ := s.messages.LatestByConversationID(conv.ID)
+			// ponytail: BOSS list only exposes latest text, not sender; switch to DOM-side sender parsing if BOSS exposes it reliably.
+			isEcho := isBossEchoMessage(latest, lastMessage)
+			if !isEcho && (latest == nil || strings.TrimSpace(latest.Content) != messageContent) {
+				msg := &models.Message{
+					ConversationID: conv.ID,
+					SenderID:       0,
+					SenderIsAgent:  false,
+					Content:        messageContent,
+					MessageType:    "user_message",
+					ChatMode:       "human",
+					IsRead:         false,
+				}
+				if err := s.messages.Create(msg); err != nil {
+					return nil, err
+				}
+				_ = s.conversations.UpdateFields(conv.ID, map[string]interface{}{
+					"updated_at":   msg.CreatedAt,
+					"last_seen_at": &msg.CreatedAt,
+				})
+			}
+		}
+
+		conv, _ = s.conversations.GetByID(conv.ID)
+		if summary, err := s.buildSummary(*conv, ownerID); err == nil {
+			result.Conversations = append(result.Conversations, summary)
+		}
+		if isNew {
+			result.Imported++
+		} else {
+			result.Updated++
+		}
+	}
+	return result, nil
+}
+
+func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID uint, items []BossChatHistoryMessage) error {
+	existing, err := s.messages.ListByConversationID(conversationID)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	deleteIDs := []uint{}
+	for _, msg := range existing {
+		if msg.MessageType == "system_message" {
+			continue
+		}
+		if isBossHistoryNoise(msg.Content) {
+			deleteIDs = append(deleteIDs, msg.ID)
+			continue
+		}
+		if cleaned := cleanBossHistoryContent(msg.Content); cleaned != strings.TrimSpace(msg.Content) {
+			_ = s.messages.UpdateContent(msg.ID, cleaned)
+			msg.Content = cleaned
+		}
+		seen[bossHistoryMessageKey(msg.SenderIsAgent, msg.Content)] = true
+	}
+	if err := s.messages.DeleteByIDs(deleteIDs); err != nil {
+		return err
+	}
+	var latest *models.Message
+	for _, item := range items {
+		content := cleanBossHistoryContent(item.Content)
+		if content == "" {
+			continue
+		}
+		senderIsAgent := strings.EqualFold(cleanText(item.Sender), "agent")
+		key := bossHistoryMessageKey(senderIsAgent, content)
+		if seen[key] {
+			continue
+		}
+		msg := &models.Message{
+			ConversationID: conversationID,
+			SenderID:       0,
+			SenderIsAgent:  senderIsAgent,
+			Content:        content,
+			MessageType:    "user_message",
+			ChatMode:       "human",
+			IsRead:         senderIsAgent,
+		}
+		if senderIsAgent {
+			msg.SenderID = ownerID
+		}
+		if err := s.messages.Create(msg); err != nil {
+			return err
+		}
+		seen[key] = true
+		latest = msg
+	}
+	if latest != nil {
+		return s.conversations.UpdateFields(conversationID, map[string]interface{}{
+			"updated_at":   latest.CreatedAt,
+			"last_seen_at": &latest.CreatedAt,
+		})
+	}
+	return nil
+}
+
+func bossHistoryMessageKey(senderIsAgent bool, content string) string {
+	// ponytail: exact text de-dupe can collapse repeated identical messages; add BOSS message IDs/timestamps if they become available.
+	return fmt.Sprintf("%t|%s", senderIsAgent, strings.TrimSpace(content))
+}
+
+func cleanBossHistoryContent(content string) string {
+	content = cleanText(content)
+	for _, prefix := range []string{"已读 ", "送达 "} {
+		content = strings.TrimPrefix(content, prefix)
+	}
+	return strings.TrimSpace(content)
+}
+
+func isBossHistoryNoise(content string) bool {
+	content = strings.TrimSpace(content)
+	noise := map[string]bool{
+		"未选中联系人":        true,
+		"列表只展示近30天的联系人": true,
+		"帮我问意向":         true,
+		"帮我问意向 您可以在这里直接对牛人发起「意向沟通」 我知道了": true,
+		"备注 举报 拉黑": true,
+		"表情":       true,
+		"常用语":      true,
+		"更多":       true,
+	}
+	if noise[content] {
+		return true
+	}
+	if strings.HasPrefix(content, "BOSS候选人：") {
+		return true
+	}
+	return len(content) > 6 &&
+		content[0] >= '0' && content[0] <= '9' &&
+		content[1] >= '0' && content[1] <= '9' &&
+		content[2] == ':'
+}
+
+func isBossEchoMessage(latest *models.Message, lastMessage string) bool {
+	return latest != nil &&
+		latest.SenderIsAgent &&
+		latest.MessageType != "system_message" &&
+		strings.TrimSpace(latest.Content) == strings.TrimSpace(lastMessage)
+}
+
+func bossChatVisitorID(referrer string) uint {
+	return uint(2000000000 + crc32.ChecksumIEEE([]byte(referrer))%1000000000)
+}
+
+func buildBossChatNotes(name string, role string, profile string) string {
+	lines := []string{"BOSS候选人：" + name}
+	if strings.TrimSpace(role) != "" {
+		lines = append(lines, "沟通岗位："+strings.TrimSpace(role))
+	}
+	if strings.TrimSpace(profile) != "" {
+		lines = append(lines, strings.TrimSpace(profile))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildBossChatMessage(name string, role string, lastMessage string, timeText string) string {
+	header := "BOSS候选人：" + name
+	if strings.TrimSpace(role) != "" {
+		header += " · " + strings.TrimSpace(role)
+	}
+	if strings.TrimSpace(timeText) != "" {
+		header += "（" + strings.TrimSpace(timeText) + "）"
+	}
+	if strings.TrimSpace(lastMessage) == "" {
+		return header + "\n已从BOSS沟通列表同步"
+	}
+	return header + "\n" + strings.TrimSpace(lastMessage)
+}
+
 func (s *ConversationService) buildSummary(conv models.Conversation, userID uint) (ConversationSummary, error) {
 	var lastSeen *time.Time
 	if conv.LastSeenAt != nil {
@@ -347,13 +594,16 @@ func (s *ConversationService) buildSummary(conv models.Conversation, userID uint
 		ID:               conv.ID,
 		ConversationType: conv.ConversationType,
 		VisitorID:        conv.VisitorID,
-		AgentID:           conv.AgentID,
-		Status:            conv.Status,
-		ChatMode:          conv.ChatMode,
-		CreatedAt:         conv.CreatedAt,
-		UpdatedAt:         conv.UpdatedAt,
-		LastSeenAt:        lastSeen,
-		HasParticipated:   hasParticipated,
+		AgentID:          conv.AgentID,
+		Status:           conv.Status,
+		ChatMode:         conv.ChatMode,
+		Website:          conv.Website,
+		Referrer:         conv.Referrer,
+		Notes:            conv.Notes,
+		CreatedAt:        conv.CreatedAt,
+		UpdatedAt:        conv.UpdatedAt,
+		LastSeenAt:       lastSeen,
+		HasParticipated:  hasParticipated,
 	}
 
 	if message, err := s.messages.LatestByConversationID(conv.ID); err == nil && message != nil {

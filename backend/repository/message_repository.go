@@ -23,6 +23,19 @@ func (r *MessageRepository) Create(message *models.Message) error {
 	return r.db.Create(message).Error
 }
 
+// UpdateContent updates a stored message body.
+func (r *MessageRepository) UpdateContent(id uint, content string) error {
+	return r.db.Model(&models.Message{}).Where("id = ?", id).Update("content", content).Error
+}
+
+// DeleteByIDs deletes messages by primary key.
+func (r *MessageRepository) DeleteByIDs(ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.Delete(&models.Message{}, ids).Error
+}
+
 // ListByConversationID 按时间顺序查询会话中的全部消息。
 func (r *MessageRepository) ListByConversationID(conversationID uint) ([]models.Message, error) {
 	var messages []models.Message

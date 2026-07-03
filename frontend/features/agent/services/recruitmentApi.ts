@@ -120,6 +120,13 @@ export interface BossSearchResult {
   message: string;
 }
 
+export interface BossImportCandidatesResult {
+  candidates: RecruitmentCandidate[];
+  imported: number;
+  skipped: number;
+  message: string;
+}
+
 export interface RecruitmentAgentEvent {
   step: string;
   status: string;
@@ -347,5 +354,15 @@ export async function searchBossCandidates(payload: CreateRequirementPayload): P
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw await parseApiError(res, "BOSS candidate search failed");
+  return res.json();
+}
+
+export async function importBossCandidates(requirementId: number, limit: number): Promise<BossImportCandidatesResult> {
+  const res = await fetch(apiUrl("/agent/boss-assistant/import-candidates"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...getAgentHeaders() },
+    body: JSON.stringify({ requirement_id: requirementId, limit }),
+  });
+  if (!res.ok) throw await parseApiError(res, "BOSS candidate import failed");
   return res.json();
 }

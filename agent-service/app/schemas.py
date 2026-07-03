@@ -74,3 +74,17 @@ class BossBrowserSearchRequest(BaseModel):
     sort_preference: str = ""
     filter_viewed_14_days: bool = False
     filter_exchanged_30_days: bool = False
+
+
+class BossBrowserCandidatesRequest(BaseModel):
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class BossBrowserChatsRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class BossBrowserSendMessageRequest(BaseModel):
+    name: str
+    role: str = ""
+    content: str

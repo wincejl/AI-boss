@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAuth } from "@/features/agent/hooks/useAuth";
 import { useConversations } from "@/features/agent/hooks/useConversations";
 import { useMessages } from "@/features/agent/hooks/useMessages";
-import { initInternalConversation } from "@/features/agent/services/conversationApi";
+import { importBossChats, initInternalConversation } from "@/features/agent/services/conversationApi";
 import { closeConversation } from "@/features/agent/services/conversationApi";
 import { toast } from "@/hooks/useToast";
 import { useProfile } from "@/features/agent/hooks/useProfile";
@@ -90,6 +90,8 @@ export function DashboardShell() {
   // 会话过滤状态
   const [conversationFilter, setConversationFilter] = useState<"all" | "mine" | "others">("all");
   const [conversationStatus, setConversationStatus] = useState<"open" | "closed">("open");
+  const [syncingBossChats, setSyncingBossChats] = useState(false);
+  const bossChatPollingRef = useRef(false);
 
   // 声音通知开关（客服端）
   const { enabled: soundEnabled, toggle: toggleSound } = useSoundNotification(false);
@@ -286,6 +288,63 @@ export function DashboardShell() {
     }
   }, [agent?.id, refreshConversations, selectConversation]);
 
+  const handleSyncBossChats = useCallback(async () => {
+    setSyncingBossChats(true);
+    try {
+      const result = await importBossChats(20);
+      await refreshConversations();
+      if (result.conversations[0]?.id) {
+        selectConversation(result.conversations[0].id);
+      }
+      toast.success(`已同步BOSS沟通：新增${result.imported}，更新${result.updated}`);
+    } catch (e) {
+      toast.error((e as Error).message || "同步BOSS沟通失败");
+    } finally {
+      setSyncingBossChats(false);
+    }
+  }, [refreshConversations, selectConversation]);
+
+  const syncBossChatsQuietly = useCallback(async () => {
+    if (bossChatPollingRef.current) return;
+    bossChatPollingRef.current = true;
+    try {
+      await importBossChats(20);
+      await refreshConversations();
+      if (selectedConversationId && selectedConversation?.referrer?.startsWith("boss://chat/")) {
+        await refreshMessages(selectedConversationId);
+        await refreshConversationDetail(selectedConversationId);
+      }
+    } catch (e) {
+      console.warn("BOSS chat polling failed:", e);
+    } finally {
+      bossChatPollingRef.current = false;
+    }
+  }, [
+    refreshConversationDetail,
+    refreshConversations,
+    refreshMessages,
+    selectedConversation?.referrer,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    if (!agent?.id || !isChatPage || isInternalChat || conversationStatus !== "open") {
+      return;
+    }
+    const poll = () => {
+      if (document.visibilityState === "visible") {
+        void syncBossChatsQuietly();
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 15000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [agent?.id, conversationStatus, isChatPage, isInternalChat, syncBossChatsQuietly]);
+
   if (authLoading || (loading && isInitialLoad)) {
     return (
       <div className="flex justify-center items-center min-h-screen bg-background">
@@ -324,6 +383,8 @@ export function DashboardShell() {
         }}
         mode={isInternalChat ? "internal" : "visitor"}
         onNewClick={isInternalChat ? handleNewInternalConversation : undefined}
+        onSyncBossChats={!isInternalChat ? handleSyncBossChats : undefined}
+        syncingBossChats={syncingBossChats}
       />
     </div>
   ) : (
