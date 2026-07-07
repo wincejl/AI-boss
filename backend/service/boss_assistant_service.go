@@ -72,6 +72,52 @@ type BossSearchResult struct {
 	Message string `json:"message"`
 }
 
+type BossCandidateDraft struct {
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	CurrentRole string `json:"current_role"`
+	Location    string `json:"location"`
+	Tags        string `json:"tags"`
+	Profile     string `json:"profile"`
+}
+
+type BossCandidatesResult struct {
+	Candidates []BossCandidateDraft `json:"candidates"`
+	Message    string               `json:"message"`
+}
+
+type BossChatDraft struct {
+	Key         string                   `json:"key"`
+	Name        string                   `json:"name"`
+	Role        string                   `json:"role"`
+	LastMessage string                   `json:"last_message"`
+	TimeText    string                   `json:"time_text"`
+	Profile     string                   `json:"profile"`
+	Messages    []BossChatHistoryMessage `json:"messages"`
+}
+
+type BossChatHistoryMessage struct {
+	Sender   string `json:"sender"`
+	Content  string `json:"content"`
+	TimeText string `json:"time_text"`
+}
+
+type BossChatsResult struct {
+	Chats   []BossChatDraft `json:"chats"`
+	Message string          `json:"message"`
+}
+
+type BossChatMessageInput struct {
+	Name    string
+	Role    string
+	Content string
+}
+
+type BossChatMessageResult struct {
+	Message string `json:"message"`
+	Target  string `json:"target"`
+}
+
 type bossSearchPayload struct {
 	City                  string `json:"city"`
 	Category              string `json:"category"`
@@ -97,6 +143,12 @@ type bossProcessProbe struct {
 	WindowWidth  int    `json:"window_width"`
 	WindowHeight int    `json:"window_height"`
 	Message      string `json:"message"`
+}
+
+type bossChatMessagePayload struct {
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 func NewBossAssistantService(settings *repository.AppSettingRepository) *BossAssistantService {
@@ -199,6 +251,39 @@ func (s *BossAssistantService) SearchCandidates(input BossSearchInput) (*BossSea
 	}, nil
 }
 
+func (s *BossAssistantService) ReadCandidates(limit int) (*BossCandidatesResult, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BOSS candidate import is only available on Windows")
+	}
+	return runBossBrowserAgentCandidates(normalizeBossCandidateLimit(limit))
+}
+
+func (s *BossAssistantService) ReadChats(limit int) (*BossChatsResult, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BOSS chat import is only available on Windows")
+	}
+	return runBossBrowserAgentChats(normalizeBossCandidateLimit(limit))
+}
+
+func (s *BossAssistantService) SendChatMessage(input BossChatMessageInput) (*BossChatMessageResult, error) {
+	name := strings.TrimSpace(input.Name)
+	content := strings.TrimSpace(input.Content)
+	if name == "" {
+		return nil, fmt.Errorf("BOSS chat target name is required")
+	}
+	if content == "" {
+		return nil, fmt.Errorf("BOSS message content is required")
+	}
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BOSS message sync is only available on Windows")
+	}
+	return runBossBrowserAgentSendMessage(bossChatMessagePayload{
+		Name:    name,
+		Role:    strings.TrimSpace(input.Role),
+		Content: content,
+	})
+}
+
 func runBossBrowserAgentSearch(payload bossSearchPayload) (*BossSearchResult, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
 	if baseURL == "" {
@@ -238,6 +323,167 @@ func runBossBrowserAgentSearch(payload bossSearchPayload) (*BossSearchResult, er
 		out.Message = "BOSS browser search executed"
 	}
 	return &BossSearchResult{Output: out.Output, Message: out.Message}, nil
+}
+
+func runBossBrowserAgentSendMessage(payload bossChatMessagePayload) (*BossChatMessageResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/send-message", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss browser message send failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossChatMessageResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "BOSS message sent"
+	}
+	return &out, nil
+}
+
+func runBossBrowserAgentCandidates(limit int) (*BossCandidatesResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(map[string]int{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/candidates", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss browser candidates import failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossCandidatesResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "BOSS candidates read"
+	}
+	return &out, nil
+}
+
+func runBossBrowserAgentChats(limit int) (*BossChatsResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(map[string]int{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/chats", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss browser chats import failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossChatsResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "BOSS chats read"
+	}
+	return &out, nil
+}
+
+func normalizeBossCandidateLimit(value int) int {
+	if value <= 0 {
+		return 10
+	}
+	if value > 50 {
+		return 50
+	}
+	return value
+}
+
+func BossChatTargetFromNotes(notes string) (string, string) {
+	var name, role string
+	for _, line := range strings.Split(notes, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if name == "" && strings.Contains(line, "候选人") {
+			name = cleanBossChatTargetValue(afterAnyColon(line))
+		}
+		if role == "" && strings.Contains(line, "岗位") {
+			role = strings.TrimSpace(afterAnyColon(line))
+		}
+	}
+	return name, role
+}
+
+func afterAnyColon(value string) string {
+	if _, after, ok := strings.Cut(value, "："); ok {
+		return after
+	}
+	if _, after, ok := strings.Cut(value, ":"); ok {
+		return after
+	}
+	return value
+}
+
+func cleanBossChatTargetValue(value string) string {
+	value = strings.TrimSpace(value)
+	for _, sep := range []string{"·", "（", "(", "|"} {
+		if before, _, ok := strings.Cut(value, sep); ok {
+			value = strings.TrimSpace(before)
+		}
+	}
+	return value
 }
 
 func (s *BossAssistantService) getSavedExePath() (string, error) {

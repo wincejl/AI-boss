@@ -28,6 +28,12 @@ export function ConversationListItem({
   const lastMessagePreview = lastMessage
     ? buildMessagePreview(lastMessage.content)
     : t("agent.conversation.noMessage");
+  const bossName = conversation.website === "BOSS直聘"
+    ? conversation.notes?.match(/^BOSS候选人[:：]\s*(.+)$/m)?.[1]
+    : "";
+  const bossRole = conversation.website === "BOSS直聘"
+    ? conversation.notes?.match(/^沟通岗位[:：]\s*(.+)$/m)?.[1]
+    : "";
   // 根据 last_seen_at 判断是否在线（最近 10 秒内认为在线）
   const isOnline = isVisitorOnline(conversation.last_seen_at);
 
@@ -59,7 +65,7 @@ export function ConversationListItem({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="font-medium text-foreground text-sm truncate">
-              {t("agent.chat.conversation")} #{conversation.id}
+              {bossName || `${t("agent.chat.conversation")} #${conversation.id}`}
             </span>
             {/* 在线/离线状态图标 */}
             {isOnline && (
@@ -97,7 +103,7 @@ export function ConversationListItem({
           </div>
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground min-w-0">
             <span className="truncate">
-              {t("agent.conversation.visitor")} #{conversation.visitor_id}
+              {bossName ? `BOSS直聘${bossRole ? ` · ${bossRole}` : ""}` : `${t("agent.conversation.visitor")} #${conversation.visitor_id}`}
             </span>
             <span className="flex-shrink-0 whitespace-nowrap">{formatConversationTime(conversation.updated_at)}</span>
           </div>
@@ -106,4 +112,3 @@ export function ConversationListItem({
     </Card>
   );
 }
-

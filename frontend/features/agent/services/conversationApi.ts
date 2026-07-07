@@ -91,6 +91,32 @@ export async function fetchConversationDetail(
 }
 
 /** 关闭会话（进入历史/归档）。访客再次发消息会自动 reopen（B 方案）。 */
+export async function importBossChats(limit = 20): Promise<{
+  conversations: ConversationSummary[];
+  imported: number;
+  updated: number;
+  skipped: number;
+  message: string;
+}> {
+  const res = await fetch(apiUrl("/agent/boss-assistant/import-chats"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...getAgentHeaders() },
+    body: JSON.stringify({ limit }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "同步BOSS沟通失败");
+  }
+  const data = await res.json();
+  return {
+    conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    imported: Number(data.imported ?? 0),
+    updated: Number(data.updated ?? 0),
+    skipped: Number(data.skipped ?? 0),
+    message: data.message ?? "",
+  };
+}
+
 export async function closeConversation(conversationId: number): Promise<void> {
   const res = await fetch(apiUrl(`/conversations/${conversationId}/close`), {
     method: "POST",
@@ -138,4 +164,3 @@ export async function updateConversationContact(
     notes: data.notes ?? "",
   };
 }
-

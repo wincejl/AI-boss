@@ -43,6 +43,9 @@ type ConversationSummary struct {
 	AgentID          uint
 	Status           string
 	ChatMode         string // human | ai
+	Website          string
+	Referrer         string
+	Notes            string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	LastMessage      *LastMessageSummary

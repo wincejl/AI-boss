@@ -5,7 +5,7 @@ import { ConversationHeader, type ConversationFilter } from "./ConversationHeade
 import { ConversationSearch } from "./ConversationSearch";
 import { ConversationList } from "./ConversationList";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { useI18n } from "@/lib/i18n/provider";
 
 type ConversationStatus = "open" | "closed";
@@ -23,6 +23,8 @@ interface ConversationSidebarProps {
   /** 内部对话（知识库测试）模式：显示「新建内部对话」按钮，隐藏筛选 */
   mode?: "visitor" | "internal";
   onNewClick?: () => void;
+  onSyncBossChats?: () => void;
+  syncingBossChats?: boolean;
 }
 
 export function ConversationSidebar({
@@ -37,6 +39,8 @@ export function ConversationSidebar({
   onStatusChange,
   mode = "visitor",
   onNewClick,
+  onSyncBossChats,
+  syncingBossChats = false,
 }: ConversationSidebarProps) {
   const { t } = useI18n();
   return (
@@ -60,6 +64,19 @@ export function ConversationSidebar({
         />
       )}
       <div className="flex-shrink-0 px-2 min-w-0">
+        {mode === "visitor" && onSyncBossChats && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full mt-2 gap-2"
+            onClick={onSyncBossChats}
+            disabled={syncingBossChats}
+          >
+            <RefreshCw className={`w-4 h-4 ${syncingBossChats ? "animate-spin" : ""}`} />
+            同步BOSS沟通
+          </Button>
+        )}
         <ConversationSearch value={searchQuery} onChange={onSearchChange} />
       </div>
       <ConversationList
@@ -71,4 +88,3 @@ export function ConversationSidebar({
     </div>
   );
 }
-

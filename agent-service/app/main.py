@@ -5,9 +5,9 @@ import os
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
-from .boss_browser import BossSearchPayload, search_candidates, snapshot
+from .boss_browser import BossSearchPayload, read_candidates, read_chats, search_candidates, send_chat_message, snapshot
 from .recruitment_agent import run_recruitment_agent
-from .schemas import BossBrowserSearchRequest, RecruitmentAgentRequest
+from .schemas import BossBrowserCandidatesRequest, BossBrowserChatsRequest, BossBrowserSearchRequest, BossBrowserSendMessageRequest, RecruitmentAgentRequest
 
 load_dotenv()
 
@@ -52,5 +52,29 @@ def boss_snapshot():
 def boss_search(payload: BossBrowserSearchRequest):
     try:
         return search_candidates(BossSearchPayload(**payload.model_dump()))
-    except RuntimeError as exc:
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/candidates")
+def boss_candidates(payload: BossBrowserCandidatesRequest):
+    try:
+        return read_candidates(payload.limit)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/chats")
+def boss_chats(payload: BossBrowserChatsRequest):
+    try:
+        return read_chats(payload.limit)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/send-message")
+def boss_send_message(payload: BossBrowserSendMessageRequest):
+    try:
+        return send_chat_message(payload.name, payload.role, payload.content)
+    except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

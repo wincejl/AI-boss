@@ -221,7 +221,6 @@ export function MessageList({
       }
     };
 
-    handleScroll();
     container.addEventListener("scroll", handleScroll);
     return () => {
       container.removeEventListener("scroll", handleScroll);
@@ -253,6 +252,7 @@ export function MessageList({
     const hasNewMessage =
       lastMessage.id !== lastMessageIdRef.current ||
       messages.length !== lastMessageCountRef.current;
+    const wasStickingToBottom = shouldStickToBottomRef.current;
 
     // 更新记录
     lastMessageIdRef.current = lastMessage.id;
@@ -297,6 +297,7 @@ export function MessageList({
           isInitialLoad ||
           (hasNewMessage &&
             (isLastMessageFromCurrentUser ||
+              wasStickingToBottom ||
               isNearBottom ||
               (!currentUserIsAgent && !isLastMessageFromCurrentUser)));
 
@@ -455,7 +456,12 @@ export function MessageList({
     internalChatMode,
   ]);
 
-  if (loading) {
+  const hasCurrentConversationMessages =
+    messages.length > 0 &&
+    (conversationId == null ||
+      messages.every((message) => message.conversation_id === conversationId));
+
+  if (loading && !hasCurrentConversationMessages) {
     return (
       <div className="flex-1 flex items-center justify-center bg-muted/30">
         <span className="text-sm text-muted-foreground">消息加载中...</span>
@@ -718,4 +724,3 @@ export function MessageList({
     </>
   );
 }
-

@@ -26,17 +26,63 @@ AI-CS-master/
 
 ## 快速启动
 
-推荐使用后台启动脚本，不需要手动开 3 个 PowerShell。
+推荐使用后台启动脚本，不需要手动开 3 个终端窗口。
+
+macOS：
+
+```bash
+cd /Users/sydney/Desktop/AI-boss-main
+chmod +x scripts/start-dev.sh scripts/stop-dev.sh
+./scripts/start-dev.sh
+```
+
+脚本会自动启动本地 MySQL 容器。若需要同时学习知识库/RAG/向量检索链路，再启动 Milvus：
+
+```bash
+./scripts/start-dev.sh --with-milvus
+```
+
+停止服务：
+
+```bash
+./scripts/stop-dev.sh
+```
+
+如果也要停止 Docker 里的 MySQL / Milvus：
+
+```bash
+./scripts/stop-dev.sh --infra --milvus
+```
+
+如果只看页面、不需要 BOSS 自动搜索：
+
+```bash
+./scripts/start-dev.sh --no-agent
+```
+
+Windows：
 
 ```powershell
 cd E:\postgraduate_project\aihr-boss\AI-CS-master\AI-CS-master
 powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
+脚本会自动启动本地 MySQL 容器。若需要同时学习知识库/RAG/向量检索链路，再启动 Milvus：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1 -WithMilvus
+```
+
 停止服务：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
+```
+
+如果也要停止 Docker 里的 MySQL / Milvus：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1 -Infra -Milvus
 ```
 
 访问地址：

@@ -502,7 +502,7 @@ func main() {
 	// 初始化控制器
 	authController := controller.NewAuthController(authService)
 	conversationController := controller.NewConversationController(conversationService, aiConfigService, userService)
-	messageController := controller.NewMessageController(messageService, conversationService, userService, storageService)
+	messageController := controller.NewMessageController(messageService, conversationService, bossAssistantService, userService, storageService)
 	adminController := controller.NewAdminController(authService, userService)
 	profileController := controller.NewProfileController(profileService)
 	aiConfigController := controller.NewAIConfigController(aiConfigService, userService)
@@ -520,7 +520,7 @@ func main() {
 	analyticsController := controller.NewAnalyticsController(analyticsService, userService)
 	systemLogController := controller.NewSystemLogController(systemLogService, userService, appSettingRepo)
 	recruitmentController := controller.NewRecruitmentController(recruitmentService, userService)
-	bossAssistantController := controller.NewBossAssistantController(bossAssistantService, userService)
+	bossAssistantController := controller.NewBossAssistantController(bossAssistantService, recruitmentService, conversationService, userService)
 
 	appRouter.RegisterRoutes(
 		r,
