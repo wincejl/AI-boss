@@ -177,7 +177,7 @@ export async function sendMessage({
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    console.error(
+    console.warn(
       `❌ 发送消息失败: 对话ID=${conversationId}, 状态=${res.status}, 错误=${JSON.stringify(error)}`
     );
     void reportFrontendLog({
@@ -228,4 +228,3 @@ export async function markMessagesRead(
     read_at: typeof data.read_at === "string" ? data.read_at : undefined,
   };
 }
-

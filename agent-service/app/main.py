@@ -5,9 +5,9 @@ import os
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
-from .boss_browser import BossSearchPayload, read_candidates, read_chats, search_candidates, send_chat_message, snapshot
+from .boss_browser import BossSearchPayload, delete_chat, read_candidates, read_chats, search_candidates, send_chat_message, snapshot
 from .recruitment_agent import run_recruitment_agent
-from .schemas import BossBrowserCandidatesRequest, BossBrowserChatsRequest, BossBrowserSearchRequest, BossBrowserSendMessageRequest, RecruitmentAgentRequest
+from .schemas import BossBrowserCandidatesRequest, BossBrowserChatsRequest, BossBrowserDeleteChatRequest, BossBrowserSearchRequest, BossBrowserSendMessageRequest, RecruitmentAgentRequest
 
 load_dotenv()
 
@@ -67,7 +67,7 @@ def boss_candidates(payload: BossBrowserCandidatesRequest):
 @app.post("/v1/boss/chats")
 def boss_chats(payload: BossBrowserChatsRequest):
     try:
-        return read_chats(payload.limit)
+        return read_chats(payload.limit, payload.incremental)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -76,5 +76,13 @@ def boss_chats(payload: BossBrowserChatsRequest):
 def boss_send_message(payload: BossBrowserSendMessageRequest):
     try:
         return send_chat_message(payload.name, payload.role, payload.content)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/delete-chat")
+def boss_delete_chat(payload: BossBrowserDeleteChatRequest):
+    try:
+        return delete_chat(payload.name, payload.role)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/2930134478/AI-CS/backend/models"
 	"github.com/2930134478/AI-CS/backend/repository"
 	"github.com/2930134478/AI-CS/backend/service/embedding"
 )
@@ -14,7 +15,7 @@ import (
 type RetrievalService struct {
 	vectorStoreService *VectorStoreService
 	embeddingProvider  embedding.EmbeddingProvider
-	docRepo            *repository.DocumentRepository   // 按发布状态过滤
+	docRepo            *repository.DocumentRepository      // 按发布状态过滤
 	kbRepo             *repository.KnowledgeBaseRepository // 按知识库「参与 RAG」过滤
 	cache              *Cache
 	reranker           *SimpleReranker
@@ -56,8 +57,20 @@ func (s *RetrievalService) Retrieve(ctx context.Context, query string, topK int,
 
 	// 如果缓存未命中，执行检索
 	if !cacheHit {
+		if s.vectorStoreService == nil || !s.vectorStoreService.IsAvailable() {
+			results, err = s.retrievePublishedDocs(topK, knowledgeBaseID)
+			if s.cache != nil {
+				s.cache.Set(query, topK, knowledgeBaseID, results)
+			}
+			s.metrics.RecordQuery(err == nil, time.Since(startTime), false)
+			return results, err
+		}
 		svc, err := s.embeddingProvider.Get(ctx)
 		if err != nil {
+			if fallback, fallbackErr := s.retrievePublishedDocs(topK, knowledgeBaseID); fallbackErr == nil {
+				s.metrics.RecordQuery(true, time.Since(startTime), false)
+				return fallback, nil
+			}
 			s.metrics.RecordQuery(false, time.Since(startTime), false)
 			return nil, fmt.Errorf("获取嵌入服务失败: %w", err)
 		}
@@ -86,12 +99,19 @@ func (s *RetrievalService) Retrieve(ctx context.Context, query string, topK int,
 		}
 		results, err = s.vectorStoreService.SearchVectors(ctx, queryVectors[0], searchLimit, kbIDStr)
 		if err != nil {
+			if fallback, fallbackErr := s.retrievePublishedDocs(topK, knowledgeBaseID); fallbackErr == nil {
+				s.metrics.RecordQuery(true, time.Since(startTime), false)
+				return fallback, nil
+			}
 			s.metrics.RecordQuery(false, time.Since(startTime), false)
 			return nil, fmt.Errorf("向量检索失败: %w", err)
 		}
 
 		// 仅保留「已发布」的文档参与 RAG；未在 documents 表中的条目（如 FAQ）视为可展示
 		results = s.filterByPublished(ctx, results, topK)
+		if len(results) == 0 {
+			results, err = s.retrievePublishedDocs(topK, knowledgeBaseID)
+		}
 
 		// 缓存过滤后的结果
 		if s.cache != nil {
@@ -103,6 +123,35 @@ func (s *RetrievalService) Retrieve(ctx context.Context, query string, topK int,
 	s.metrics.RecordQuery(err == nil, time.Since(startTime), cacheHit)
 
 	return results, err
+}
+
+func (s *RetrievalService) retrievePublishedDocs(topK int, knowledgeBaseID *uint) ([]SearchResult, error) {
+	if s.docRepo == nil {
+		return []SearchResult{}, nil
+	}
+	if topK <= 0 {
+		topK = 5
+	}
+	var docs []models.Document
+	var err error
+	if knowledgeBaseID != nil {
+		docs, _, err = s.docRepo.GetByKnowledgeBaseID(*knowledgeBaseID, 1, topK, "", "published")
+	} else {
+		docs, err = s.docRepo.ListPublishedRAGDocs(topK)
+	}
+	if err != nil {
+		return nil, err
+	}
+	results := make([]SearchResult, 0, len(docs))
+	for _, doc := range docs {
+		results = append(results, SearchResult{
+			DocumentID:      ConvertDocumentID(doc.ID),
+			KnowledgeBaseID: ConvertKnowledgeBaseID(doc.KnowledgeBaseID),
+			Content:         doc.Content,
+			Score:           1,
+		})
+	}
+	return results, nil
 }
 
 // RetrieveWithRerank 执行带重排序的 RAG 检索

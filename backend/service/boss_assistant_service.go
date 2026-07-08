@@ -91,6 +91,7 @@ type BossChatDraft struct {
 	Name        string                   `json:"name"`
 	Role        string                   `json:"role"`
 	LastMessage string                   `json:"last_message"`
+	LastSender  string                   `json:"last_sender"`
 	TimeText    string                   `json:"time_text"`
 	Profile     string                   `json:"profile"`
 	Messages    []BossChatHistoryMessage `json:"messages"`
@@ -114,6 +115,11 @@ type BossChatMessageInput struct {
 }
 
 type BossChatMessageResult struct {
+	Message string `json:"message"`
+	Target  string `json:"target"`
+}
+
+type BossChatDeleteResult struct {
 	Message string `json:"message"`
 	Target  string `json:"target"`
 }
@@ -149,6 +155,11 @@ type bossChatMessagePayload struct {
 	Name    string `json:"name"`
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type bossChatsPayload struct {
+	Limit       int  `json:"limit"`
+	Incremental bool `json:"incremental"`
 }
 
 func NewBossAssistantService(settings *repository.AppSettingRepository) *BossAssistantService {
@@ -220,10 +231,15 @@ func (s *BossAssistantService) SearchCandidates(input BossSearchInput) (*BossSea
 	if runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("BOSS search sync is only available on Windows")
 	}
+	category := bossSearchCategory(input.JobCategory)
+	keyword := strings.TrimSpace(input.SearchKeyword)
+	if keyword == "" && category != "" && !strings.Contains(category, "不限") {
+		keyword = category
+	}
 	payload := bossSearchPayload{
 		City:                  bossSearchCity(input.Location),
-		Category:              bossSearchCategory(input.JobCategory, input.Role),
-		Keyword:               defaultString(input.SearchKeyword, input.Role),
+		Category:              category,
+		Keyword:               keyword,
 		Education:             bossSearchEducation(input.EducationRequirement),
 		Age:                   bossSearchAge(input.AgeRequirement),
 		RecommendedFilters:    strings.TrimSpace(input.RecommendedFilters),
@@ -231,11 +247,13 @@ func (s *BossAssistantService) SearchCandidates(input BossSearchInput) (*BossSea
 		FilterViewed14Days:    input.FilterViewed14Days,
 		FilterExchanged30Days: input.FilterExchanged30Days,
 	}
-	if strings.TrimSpace(payload.Keyword) == "" {
-		return nil, fmt.Errorf("search keyword or role is required")
+	if strings.TrimSpace(payload.Keyword) == "" && strings.TrimSpace(payload.Category) == "" {
+		return nil, fmt.Errorf("search keyword or job category is required")
 	}
 	if result, err := runBossBrowserAgentSearch(payload); err == nil {
 		return result, nil
+	} else if strings.Contains(err.Error(), "city=") && strings.Contains(err.Error(), ":not-found") {
+		return nil, err
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -258,11 +276,11 @@ func (s *BossAssistantService) ReadCandidates(limit int) (*BossCandidatesResult,
 	return runBossBrowserAgentCandidates(normalizeBossCandidateLimit(limit))
 }
 
-func (s *BossAssistantService) ReadChats(limit int) (*BossChatsResult, error) {
+func (s *BossAssistantService) ReadChats(limit int, incremental bool) (*BossChatsResult, error) {
 	if runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("BOSS chat import is only available on Windows")
 	}
-	return runBossBrowserAgentChats(normalizeBossCandidateLimit(limit))
+	return runBossBrowserAgentChats(normalizeBossCandidateLimit(limit), incremental)
 }
 
 func (s *BossAssistantService) SendChatMessage(input BossChatMessageInput) (*BossChatMessageResult, error) {
@@ -281,6 +299,20 @@ func (s *BossAssistantService) SendChatMessage(input BossChatMessageInput) (*Bos
 		Name:    name,
 		Role:    strings.TrimSpace(input.Role),
 		Content: content,
+	})
+}
+
+func (s *BossAssistantService) DeleteChat(input BossChatMessageInput) (*BossChatDeleteResult, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, fmt.Errorf("BOSS chat target name is required")
+	}
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BOSS chat delete is only available on Windows")
+	}
+	return runBossBrowserAgentDeleteChat(bossChatMessagePayload{
+		Name: name,
+		Role: strings.TrimSpace(input.Role),
 	})
 }
 
@@ -363,6 +395,44 @@ func runBossBrowserAgentSendMessage(payload bossChatMessagePayload) (*BossChatMe
 	return &out, nil
 }
 
+func runBossBrowserAgentDeleteChat(payload bossChatMessagePayload) (*BossChatDeleteResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/delete-chat", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss browser delete chat failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossChatDeleteResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "BOSS chat deleted"
+	}
+	return &out, nil
+}
+
 func runBossBrowserAgentCandidates(limit int) (*BossCandidatesResult, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
 	if baseURL == "" {
@@ -401,12 +471,12 @@ func runBossBrowserAgentCandidates(limit int) (*BossCandidatesResult, error) {
 	return &out, nil
 }
 
-func runBossBrowserAgentChats(limit int) (*BossChatsResult, error) {
+func runBossBrowserAgentChats(limit int, incremental bool) (*BossChatsResult, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("recruitment agent url is not configured")
 	}
-	raw, err := json.Marshal(map[string]int{"limit": limit})
+	raw, err := json.Marshal(bossChatsPayload{Limit: limit, Incremental: incremental})
 	if err != nil {
 		return nil, err
 	}
@@ -494,19 +564,16 @@ func (s *BossAssistantService) getSavedExePath() (string, error) {
 	return row.Value, nil
 }
 
-func bossSearchCategory(category string, role string) string {
+func bossSearchCategory(category string) string {
 	category = strings.TrimSpace(category)
-	if category == "" || strings.Contains(category, "不限") || category == "自定义" {
-		return strings.TrimSpace(role)
+	if category == "" || category == "自定义" {
+		return ""
 	}
 	return category
 }
 
 func bossSearchCity(location string) string {
 	location = strings.TrimSpace(location)
-	if cityIndex := strings.LastIndex(location, "市"); cityIndex >= 0 && cityIndex+len("市") < len(location) {
-		return strings.TrimSpace(location[cityIndex+len("市"):])
-	}
 	for _, marker := range []string{"特别行政区", "自治区", "省"} {
 		if index := strings.LastIndex(location, marker); index >= 0 && index+len(marker) < len(location) {
 			location = location[index+len(marker):]
@@ -740,6 +807,17 @@ function PasteValue([string]$value) {
   [System.Windows.Forms.SendKeys]::SendWait('^v')
   Start-Sleep -Milliseconds 120
 }
+function PasteValueAndPick([string]$value) {
+  if ([string]::IsNullOrWhiteSpace($value)) { return }
+  PasteValue $value
+  Start-Sleep -Milliseconds 250
+  [System.Windows.Forms.SendKeys]::SendWait('{DOWN}')
+  Start-Sleep -Milliseconds 80
+  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  Start-Sleep -Milliseconds 200
+  [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+  Start-Sleep -Milliseconds 120
+}
 function ClickFilterValue($map, [string]$value) {
   if ([string]::IsNullOrWhiteSpace($value)) { return }
   if (-not $map.ContainsKey($value)) { return }
@@ -751,17 +829,14 @@ try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {
 try {
   ClickMenuPoint $points.searchMenu
   Start-Sleep -Milliseconds 900
-  ClickPoint $points.category
-  [System.Windows.Forms.SendKeys]::SendWait('{HOME}')
-  Start-Sleep -Milliseconds 120
-  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-  Start-Sleep -Milliseconds 350
+  if (-not [string]::IsNullOrWhiteSpace([string]$payload.category) -and ([string]$payload.category) -notmatch '不限') {
+    ClickPoint $points.category
+    PasteValueAndPick ([string]$payload.category)
+    Start-Sleep -Milliseconds 250
+  }
   if (-not [string]::IsNullOrWhiteSpace([string]$payload.city)) {
     ClickPoint $points.city
-    PasteValue ([string]$payload.city)
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Milliseconds 120
-    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+    PasteValueAndPick ([string]$payload.city)
     Start-Sleep -Milliseconds 350
   }
   ClickPoint $points.keyword

@@ -335,20 +335,31 @@ type ImportBossChatInput struct {
 	Name        string
 	Role        string
 	LastMessage string
+	LastSender  string
 	TimeText    string
 	Profile     string
 	Messages    []BossChatHistoryMessage
 }
 
 type ImportBossChatsResult struct {
-	Conversations []ConversationSummary
-	Imported      int
-	Updated       int
-	Skipped       int
+	Conversations      []ConversationSummary
+	NewVisitorMessages []ImportedBossVisitorMessage
+	Imported           int
+	Updated            int
+	Closed             int
+	Skipped            int
 }
 
-func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, ownerID uint) (*ImportBossChatsResult, error) {
+type ImportedBossVisitorMessage struct {
+	ConversationID uint
+	Name           string
+	Role           string
+	Content        string
+}
+
+func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, ownerID uint, reconcileMissing bool) (*ImportBossChatsResult, error) {
 	result := &ImportBossChatsResult{Conversations: []ConversationSummary{}}
+	activeReferrers := map[string]struct{}{}
 	for _, item := range items {
 		name := cleanText(item.Name)
 		if name == "" {
@@ -362,6 +373,7 @@ func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, owner
 			key = strings.Join([]string{name, role, lastMessage}, "|")
 		}
 		referrer := "boss://chat/" + fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(key)))
+		activeReferrers[referrer] = struct{}{}
 		now := time.Now()
 		notes := buildBossChatNotes(name, role, item.Profile)
 		conv, err := s.conversations.FindOpenByReferrer(referrer)
@@ -389,25 +401,30 @@ func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, owner
 			}
 			isNew = true
 		} else {
-			_ = s.conversations.UpdateFields(conv.ID, map[string]interface{}{
-				"agent_id":     defaultUint(ownerID, conv.AgentID),
-				"website":      "BOSS直聘",
-				"notes":        notes,
-				"last_seen_at": &now,
-				"updated_at":   now,
+			_ = s.conversations.UpdateFieldsPreserveTimestamp(conv.ID, map[string]interface{}{
+				"agent_id": defaultUint(ownerID, conv.AgentID),
+				"website":  "BOSS直聘",
+				"notes":    notes,
 			})
 		}
 
 		if len(item.Messages) > 0 {
-			if err := s.importBossChatHistory(conv.ID, ownerID, item.Messages); err != nil {
+			newVisitorMessages, err := s.importBossChatHistory(conv.ID, ownerID, item.Messages, reconcileMissing)
+			if err != nil {
 				return nil, err
+			}
+			for _, msg := range newVisitorMessages {
+				result.NewVisitorMessages = append(result.NewVisitorMessages, ImportedBossVisitorMessage{
+					ConversationID: conv.ID,
+					Name:           name,
+					Role:           role,
+					Content:        msg.Content,
+				})
 			}
 		} else {
 			messageContent := buildBossChatMessage(name, role, lastMessage, item.TimeText)
 			latest, _ := s.messages.LatestByConversationID(conv.ID)
-			// ponytail: BOSS list only exposes latest text, not sender; switch to DOM-side sender parsing if BOSS exposes it reliably.
-			isEcho := isBossEchoMessage(latest, lastMessage)
-			if !isEcho && (latest == nil || strings.TrimSpace(latest.Content) != messageContent) {
+			if shouldImportBossListMessage(item.LastSender, latest, lastMessage, messageContent) {
 				msg := &models.Message{
 					ConversationID: conv.ID,
 					SenderID:       0,
@@ -420,6 +437,12 @@ func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, owner
 				if err := s.messages.Create(msg); err != nil {
 					return nil, err
 				}
+				result.NewVisitorMessages = append(result.NewVisitorMessages, ImportedBossVisitorMessage{
+					ConversationID: conv.ID,
+					Name:           name,
+					Role:           role,
+					Content:        msg.Content,
+				})
 				_ = s.conversations.UpdateFields(conv.ID, map[string]interface{}{
 					"updated_at":   msg.CreatedAt,
 					"last_seen_at": &msg.CreatedAt,
@@ -437,18 +460,63 @@ func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, owner
 			result.Updated++
 		}
 	}
+	if reconcileMissing {
+		closed, err := s.closeMissingBossChats(activeReferrers, ownerID)
+		if err != nil {
+			return nil, err
+		}
+		result.Closed = closed
+	}
 	return result, nil
 }
 
-func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID uint, items []BossChatHistoryMessage) error {
+func (s *ConversationService) closeMissingBossChats(activeReferrers map[string]struct{}, ownerID uint) (int, error) {
+	if len(activeReferrers) == 0 {
+		return 0, nil
+	}
+	conversations, err := s.conversations.ListOpenBossByAgentID(ownerID)
+	if err != nil {
+		return 0, err
+	}
+	ids := missingBossConversationIDs(conversations, activeReferrers)
+	for _, id := range ids {
+		if err := s.conversations.UpdateStatus(id, "closed"); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
+func missingBossConversationIDs(conversations []models.Conversation, activeReferrers map[string]struct{}) []uint {
+	ids := []uint{}
+	for _, conv := range conversations {
+		if !isBossConversationReferrer(conv.Referrer) {
+			continue
+		}
+		if _, ok := activeReferrers[conv.Referrer]; !ok {
+			ids = append(ids, conv.ID)
+		}
+	}
+	return ids
+}
+
+func isBossConversationReferrer(referrer string) bool {
+	return strings.HasPrefix(referrer, "boss://chat/")
+}
+
+func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID uint, items []BossChatHistoryMessage, replaceHistory bool) ([]*models.Message, error) {
 	existing, err := s.messages.ListByConversationID(conversationID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	deleteIDs := []uint{}
 	for _, msg := range existing {
 		if msg.MessageType == "system_message" {
+			continue
+		}
+		if replaceHistory {
+			deleteIDs = append(deleteIDs, msg.ID)
 			continue
 		}
 		if isBossHistoryNoise(msg.Content) {
@@ -459,12 +527,13 @@ func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID
 			_ = s.messages.UpdateContent(msg.ID, cleaned)
 			msg.Content = cleaned
 		}
-		seen[bossHistoryMessageKey(msg.SenderIsAgent, msg.Content)] = true
+		seen[bossHistoryMessageKey(msg.SenderIsAgent, msg.Content)]++
 	}
 	if err := s.messages.DeleteByIDs(deleteIDs); err != nil {
-		return err
+		return nil, err
 	}
 	var latest *models.Message
+	newVisitorMessages := []*models.Message{}
 	for _, item := range items {
 		content := cleanBossHistoryContent(item.Content)
 		if content == "" {
@@ -472,7 +541,7 @@ func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID
 		}
 		senderIsAgent := strings.EqualFold(cleanText(item.Sender), "agent")
 		key := bossHistoryMessageKey(senderIsAgent, content)
-		if seen[key] {
+		if consumeBossHistorySeen(seen, key) {
 			continue
 		}
 		msg := &models.Message{
@@ -488,23 +557,48 @@ func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID
 			msg.SenderID = ownerID
 		}
 		if err := s.messages.Create(msg); err != nil {
-			return err
+			return nil, err
 		}
-		seen[key] = true
+		if !senderIsAgent && !replaceHistory {
+			newVisitorMessages = append(newVisitorMessages, msg)
+		}
 		latest = msg
 	}
 	if latest != nil {
-		return s.conversations.UpdateFields(conversationID, map[string]interface{}{
+		return newVisitorMessages, s.conversations.UpdateFields(conversationID, map[string]interface{}{
 			"updated_at":   latest.CreatedAt,
 			"last_seen_at": &latest.CreatedAt,
 		})
 	}
-	return nil
+	return newVisitorMessages, nil
 }
 
 func bossHistoryMessageKey(senderIsAgent bool, content string) string {
-	// ponytail: exact text de-dupe can collapse repeated identical messages; add BOSS message IDs/timestamps if they become available.
+	// ponytail: counts preserve repeated identical BOSS messages; add BOSS message IDs if they become available.
 	return fmt.Sprintf("%t|%s", senderIsAgent, strings.TrimSpace(content))
+}
+
+func consumeBossHistorySeen(seen map[string]int, key string) bool {
+	if seen[key] <= 0 {
+		return false
+	}
+	seen[key]--
+	return true
+}
+
+func shouldImportBossListMessage(lastSender string, latest *models.Message, lastMessage string, messageContent string) bool {
+	if strings.EqualFold(strings.TrimSpace(lastSender), "agent") {
+		return false
+	}
+	if latest != nil && !latest.SenderIsAgent {
+		latestContent := strings.TrimSpace(latest.Content)
+		lastMessage = strings.TrimSpace(lastMessage)
+		if lastMessage != "" && (latestContent == lastMessage || strings.HasSuffix(latestContent, "\n"+lastMessage)) {
+			return false
+		}
+	}
+	isEcho := isBossEchoMessage(latest, lastMessage)
+	return !isEcho && (latest == nil || strings.TrimSpace(latest.Content) != strings.TrimSpace(messageContent))
 }
 
 func cleanBossHistoryContent(content string) string {
@@ -655,7 +749,7 @@ func (s *ConversationService) ListConversations(userID uint, status string) ([]C
 
 		// 过滤规则 2: 如果是人工对话，检查是否有访客发送的消息
 		// 只有当访客切换到人工并发送消息后，才显示在列表中
-		if conv.ChatMode == "human" {
+		if conv.ChatMode == "human" && !isBossConversationReferrer(conv.Referrer) {
 			hasVisitorMessage, err := s.messages.HasVisitorMessageInHumanMode(conv.ID)
 			if err != nil {
 				// 如果查询失败，为了安全起见，不显示该对话

@@ -29,6 +29,18 @@ func (r *ConversationRepository) FindOpenByVisitorID(visitorID uint) (*models.Co
 	return &conv, nil
 }
 
+func (r *ConversationRepository) ListOpenBossByAgentID(agentID uint) ([]models.Conversation, error) {
+	var conversations []models.Conversation
+	q := r.db.Where("conversation_type = ? AND status = ? AND referrer LIKE ?", "visitor", "open", "boss://chat/%")
+	if agentID > 0 {
+		q = q.Where("agent_id = ?", agentID)
+	}
+	if err := q.Order("updated_at desc").Find(&conversations).Error; err != nil {
+		return nil, err
+	}
+	return conversations, nil
+}
+
 func (r *ConversationRepository) FindOpenByReferrer(referrer string) (*models.Conversation, error) {
 	var conv models.Conversation
 	err := r.db.Where("conversation_type = ? AND referrer = ? AND status != ?", "visitor", referrer, "closed").
@@ -63,6 +75,13 @@ func (r *ConversationRepository) UpdateFields(id uint, values map[string]interfa
 		return nil
 	}
 	return r.db.Model(&models.Conversation{}).Where("id = ?", id).Updates(values).Error
+}
+
+func (r *ConversationRepository) UpdateFieldsPreserveTimestamp(id uint, values map[string]interface{}) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return r.db.Model(&models.Conversation{}).Where("id = ?", id).UpdateColumns(values).Error
 }
 
 // GetByID 根据主键查询会话。

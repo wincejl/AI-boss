@@ -102,7 +102,7 @@ export function useConversations(options?: UseConversationsOptions) {
         return filtered.length > 0 ? filtered[0].id : null;
       });
     } catch (error) {
-      console.error(error);
+      console.warn("fetch conversations failed", error);
     } finally {
       setLoading(false);
       setIsInitialLoad(false);
@@ -156,7 +156,7 @@ export function useConversations(options?: UseConversationsOptions) {
         const filtered = applyFilter(data);
         setFilteredConversations(sortByUpdatedAtDesc(filtered));
       } catch (error) {
-        console.error(error);
+        console.warn("search conversations failed", error);
         setFilteredConversations([]);
       } finally {
         setLoading(false);
@@ -354,4 +354,3 @@ export function useConversations(options?: UseConversationsOptions) {
 
   return contextValue;
 }
-

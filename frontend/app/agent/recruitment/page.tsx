@@ -330,14 +330,20 @@ function buildRequirementRole(form: CreateRequirementPayload): string {
   return form.search_keyword.trim() || category || form.role.trim();
 }
 
+function buildBossSearchKeyword(form: CreateRequirementPayload): string {
+  const category = isBlankJobCategory(form.job_category) ? "" : form.job_category.trim();
+  return form.search_keyword.trim() || category;
+}
+
 function buildRequirementPayload(form: CreateRequirementPayload): CreateRequirementPayload {
   const role = buildRequirementRole(form);
   const location = form.location.trim();
+  const searchKeyword = buildBossSearchKeyword(form);
   return {
     ...form,
     title: form.title.trim() || [location, role].filter(Boolean).join(" ") || role,
     role,
-    search_keyword: form.search_keyword.trim() || role,
+    search_keyword: searchKeyword,
     tags: "",
     must_have: "",
     nice_have: "",

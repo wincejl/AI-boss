@@ -1,7 +1,8 @@
 ﻿param(
   [switch]$NoAgent,
   [switch]$NoBrowser,
-  [switch]$Window
+  [switch]$Window,
+  [string]$Url = "http://localhost:3000/agent/dashboard?page=dashboard"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,13 +12,31 @@ $backend = Join-Path $root "backend"
 $frontend = Join-Path $root "frontend"
 $agent = Join-Path $root "agent-service"
 
-$go = Join-Path $env:TEMP "codex-go-1.24.1\go\bin\go.exe"
+function Normalize-ProcessPathEnv() {
+  $envs = [Environment]::GetEnvironmentVariables("Process")
+  if ($envs.Contains("Path") -and $envs.Contains("PATH")) {
+    $pathValue = [string]$envs["Path"]
+    if ([string]::IsNullOrWhiteSpace($pathValue)) {
+      $pathValue = [string]$envs["PATH"]
+    }
+    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+  }
+}
+
+Normalize-ProcessPathEnv
+
+$projectGo = Join-Path $root ".dev\tools\go\bin\go.exe"
+$go = $projectGo
+if (-not (Test-Path $go)) {
+  $go = Join-Path $env:TEMP "codex-go-1.24.1\go\bin\go.exe"
+}
 if (-not (Test-Path $go)) {
   $goCmd = Get-Command go -ErrorAction SilentlyContinue
   if ($goCmd) {
     $go = $goCmd.Source
   } else {
-    throw "Go not found. Install Go or restore $go"
+    throw "Go not found. Install Go, restore $go, or put portable Go at $projectGo"
   }
 }
 
@@ -55,36 +74,50 @@ function Start-DevBackground([string]$Name, [string]$WorkDir, [string]$Command) 
   [pscustomobject]@{ name = $Name; pid = $proc.Id; stdout = $stdout; stderr = $stderr }
 }
 
+function Test-PortListening([int]$Port) {
+  [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+}
+
 $started = @()
 
-if ($Window) {
+if (Test-PortListening 8080) {
+  Write-Host "Backend already running on :8080"
+} elseif ($Window) {
   Start-DevWindow "AIHR backend :8080" $backend "& `"$go`" run ."
-  Start-DevWindow "AIHR frontend :3000" $frontend "& `"$npm`" run dev"
 } else {
   $started += Start-DevBackground "backend" $backend "& `"$go`" run ."
+}
+
+if (Test-PortListening 3000) {
+  Write-Host "Frontend already running on :3000"
+} elseif ($Window) {
+  Start-DevWindow "AIHR frontend :3000" $frontend "& `"$npm`" run dev"
+} else {
   $started += Start-DevBackground "frontend" $frontend "& `"$npm`" run dev"
 }
 
 if (-not $NoAgent) {
-  if ($Window) {
+  if (Test-PortListening 8090) {
+    Write-Host "Agent already running on :8090"
+  } elseif ($Window) {
     Start-DevWindow "AIHR agent-service :8090" $agent "& `"$agentPython`" -m uvicorn app.main:app --host 127.0.0.1 --port 8090"
   } else {
     $started += Start-DevBackground "agent-service" $agent "& `"$agentPython`" -m uvicorn app.main:app --host 127.0.0.1 --port 8090"
   }
 }
 
-if (-not $Window) {
+if (-not $Window -and $started.Count -gt 0) {
   $started | ConvertTo-Json -Depth 3 | Set-Content -Encoding UTF8 -Path (Join-Path $stateDir "pids.json")
 }
 
 if (-not $NoBrowser) {
   Start-Sleep -Seconds 3
-  Start-Process "http://localhost:3000/agent/login"
+  Start-Process $Url
 }
 
 Write-Host "Started AIHR dev services."
 Write-Host "Backend:  http://127.0.0.1:8080"
-Write-Host "Frontend: http://localhost:3000/agent/login"
+Write-Host "Frontend: $Url"
 if (-not $NoAgent) { Write-Host "Agent:    http://127.0.0.1:8090/health" }
 if (-not $Window) {
   Write-Host "Logs:     $logDir"
