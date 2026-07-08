@@ -1051,6 +1051,7 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                 <RegionSelect
                   value={requirementForm.location}
                   onChange={(location) => setRequirementForm((prev) => ({ ...prev, location }))}
+                  bossMode
                 />
                 <div className="grid gap-2 sm:grid-cols-2">
                   <select

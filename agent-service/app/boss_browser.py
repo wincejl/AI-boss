@@ -271,10 +271,10 @@ def delete_chat(name: str, role: str = "") -> dict[str, Any]:
     login_lines = page_snapshot(page)
     if is_login_page(page, login_lines):
         raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
-    if not open_boss_chat_item_menu(page, name, role):
+    if not open_boss_chat_item_menu_in_list(page, name, role):
         raise RuntimeError(f"BOSS chat menu not found: {name} {role}".strip())
     time.sleep(0.25)
-    if not js_click_text(page, "删除", exact=True):
+    if not js_click_text(page, "删除", exact=True) and not js_click_text(page, "删除", exact=False):
         raise RuntimeError("BOSS delete menu item not found")
     time.sleep(0.35)
     if not (js_click_text(page, "确定", exact=True) or js_click_text(page, "确认", exact=True)):
@@ -334,6 +334,17 @@ def click_boss_chat_item_in_list(page: ChromiumPage, name: str, role: str = "", 
     return False
 
 
+def open_boss_chat_item_menu_in_list(page: ChromiumPage, name: str, role: str = "", attempts: int = 10) -> bool:
+    reset_boss_chat_list_scroll(page)
+    for _ in range(max(1, attempts)):
+        if open_boss_chat_item_menu(page, name, role):
+            return True
+        if not scroll_boss_chat_list(page):
+            break
+        time.sleep(0.25)
+    return False
+
+
 def boss_chat_detail_matches(page: ChromiumPage, name: str, role: str = "") -> bool:
     try:
         script = """
@@ -371,7 +382,16 @@ def open_boss_chat_item_menu(page: ChromiumPage, name: str, role: str = "") -> b
         """
         const name = args[0];
         const role = args[1];
-        const rows = all('.geek-item-wrap,.geek-item,li,article,section,div')
+        const panes = all('div,ul,section')
+          .map(el => ({ el, rect: el.getBoundingClientRect() }))
+          .filter(item => visible(item.el))
+          .filter(item => item.el.scrollHeight > item.el.clientHeight + 80)
+          .filter(item => item.rect.left < Math.min(900, window.innerWidth * 0.55))
+          .filter(item => item.rect.width >= 220 && item.rect.width <= 700)
+          .filter(item => item.rect.height >= 220)
+          .sort((a, b) => b.rect.height - a.rect.height);
+        const root = panes[0]?.el || document;
+        const rows = [...root.querySelectorAll('.geek-item-wrap,.geek-item,li,article,section,div')]
           .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
           .filter(item => item.text.includes(name))
           .filter(item => !role || item.text.includes(role))
@@ -390,11 +410,19 @@ def open_boss_chat_item_menu(page: ChromiumPage, name: str, role: str = "") -> b
             .map(el => ({ el, rect: el.getBoundingClientRect(), cls: String(el.className || '') }))
             .filter(item => /operate|operation|more|menu/i.test(item.cls) || item.rect.right > rowRect.right - 80)
             .sort((a, b) => b.rect.left - a.rect.left)[0]?.el;
-        if (!op) return false;
-        op.style.visibility = 'visible';
-        op.style.opacity = '1';
-        if (getComputedStyle(op).display === 'none') op.style.display = 'block';
-        const target = op.querySelector('img,button,span,div') || op;
+        const doc = row.ownerDocument || document;
+        const x = Math.max(rowRect.left + 8, rowRect.right - 28);
+        const y = rowRect.top + rowRect.height / 2;
+        const target = (op && (op.querySelector('img,button,span,div') || op)) || doc.elementFromPoint(x, y);
+        if (!target) return false;
+        if (op) {
+          op.style.visibility = 'visible';
+          op.style.opacity = '1';
+          if (getComputedStyle(op).display === 'none') op.style.display = 'block';
+        }
+        for (const type of ['mousemove', 'mousedown', 'mouseup', 'click']) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+        }
         for (const type of ['mousedown', 'mouseup', 'click']) {
           target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
         }
@@ -939,7 +967,7 @@ def split_boss_city_area(city: str) -> tuple[str, str]:
     city = (city or "").strip()
     if "市" in city and not city.endswith("市"):
         head, tail = city.split("市", 1)
-        return head.strip(), tail.strip()
+        return (head + "市").strip(), tail.strip()
     return city, ""
 
 
@@ -1000,16 +1028,7 @@ def select_category(page: ChromiumPage, category: str) -> str:
     if not category:
         return ""
     target_category = "不限职位" if "不限" in category else category
-    clicked = run_js_bool(
-        page,
-        """
-        const doc = searchDoc();
-        const current = doc.querySelector('.search-current-job, .search-job-list-C .ui-dropmenu-label, .job-selecter-wrap .ui-dropmenu-label, .job-selecter-wrap');
-        if (!current) return false;
-        current.click();
-        return true;
-        """,
-    )
+    clicked = open_job_category_dropdown(page)
     time.sleep(0.3 if clicked else 0.1)
     if click_job_dropdown_option(page, target_category):
         return f"职位={target_category}"
@@ -1018,25 +1037,72 @@ def select_category(page: ChromiumPage, category: str) -> str:
     return f"职位={target_category}:not-found"
 
 
+def open_job_category_dropdown(page: ChromiumPage) -> bool:
+    return run_js_bool(
+        page,
+        """
+        const doc = searchDoc();
+        const current = doc.querySelector('.search-current-job, .search-job-list-C .ui-dropmenu-label, .job-selecter-wrap .ui-dropmenu-label, .job-selecter-wrap');
+        if (current) {
+          current.click();
+          return true;
+        }
+        const input = doc.querySelector('input.search-input');
+        if (!input) return false;
+        const inputRect = input.getBoundingClientRect();
+        const target = [...doc.querySelectorAll('button,a,span,div')]
+          .filter(visible)
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => item.rect.top >= inputRect.top - 24 && item.rect.bottom <= inputRect.bottom + 24)
+          .filter(item => item.rect.right <= inputRect.left + 30 && item.rect.left >= inputRect.left - 360)
+          .filter(item => item.text && item.text.length <= 20)
+          .sort((a, b) => Math.abs(a.rect.right - inputRect.left) - Math.abs(b.rect.right - inputRect.left))[0]?.el;
+        if (!target) return false;
+        target.click();
+        return true;
+        """,
+    )
+
+
 def click_job_dropdown_option(page: ChromiumPage, value: str) -> bool:
     return run_js_bool(
         page,
         """
         const value = args[0];
         const doc = searchDoc();
-        const list = doc.querySelector('.search-job-list-C .ui-dropmenu-list, .job-selecter-wrap .ui-dropmenu-list, .ui-dropmenu-visible .ui-dropmenu-list, .ui-dropmenu-list');
-        if (!list) return false;
-        const items = [...list.querySelectorAll('li,div,span')].filter(visible);
+        const lists = [...doc.querySelectorAll('.search-job-list-C .ui-dropmenu-list, .job-selecter-wrap .ui-dropmenu-list, .ui-dropmenu-visible .ui-dropmenu-list, .ui-dropmenu-list')]
+          .filter(visible);
+        const roots = lists.length ? lists : [doc];
+        const input = doc.querySelector('input.search-input');
+        const inputRect = input ? input.getBoundingClientRect() : null;
+        const items = roots.flatMap(root => [...root.querySelectorAll('li,div,span,a')].filter(visible));
         const target = items
           .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => !inputRect || item.rect.top <= inputRect.bottom + 260)
           .filter(item => item.text === value || (value.includes('不限') && item.text.includes('不限')))
-          .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0];
+          .sort((a, b) => Math.abs(a.rect.top - (inputRect ? inputRect.bottom : 0)) - Math.abs(b.rect.top - (inputRect ? inputRect.bottom : 0)))[0];
         if (!target) return false;
         target.el.click();
         return true;
         """,
         value,
     )
+
+
+def boss_search_keyword_value(page: ChromiumPage) -> str:
+    try:
+        return str(
+            page.run_js(
+                """
+                const doc = searchDoc();
+                const input = doc.querySelector('input.search-input');
+                return input ? String(input.value || input.getAttribute('value') || '').trim() : '';
+                """
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
 
 
 def fill_keyword(page: ChromiumPage, keyword: str) -> str:
@@ -1048,7 +1114,8 @@ def fill_keyword(page: ChromiumPage, keyword: str) -> str:
             input_ele = frame.ele("css:input.search-input", timeout=1)
             input_ele.click()
             input_ele.input(keyword, clear=True)
-            return f"keyword={keyword}"
+            if boss_search_keyword_value(page) == keyword:
+                return f"keyword={keyword}"
         except Exception:
             pass
     ok = run_js_bool(

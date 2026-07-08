@@ -424,7 +424,11 @@ func (s *ConversationService) ImportBossChats(items []ImportBossChatInput, owner
 		} else {
 			messageContent := buildBossChatMessage(name, role, lastMessage, item.TimeText)
 			latest, _ := s.messages.LatestByConversationID(conv.ID)
-			if shouldImportBossListMessage(item.LastSender, latest, lastMessage, messageContent) {
+			duplicate := false
+			if existing, err := s.messages.ListByConversationID(conv.ID); err == nil {
+				duplicate = hasBossListMessage(existing, lastMessage, messageContent)
+			}
+			if !duplicate && shouldImportBossListMessage(item.LastSender, latest, lastMessage, messageContent) {
 				msg := &models.Message{
 					ConversationID: conv.ID,
 					SenderID:       0,
@@ -599,6 +603,24 @@ func shouldImportBossListMessage(lastSender string, latest *models.Message, last
 	}
 	isEcho := isBossEchoMessage(latest, lastMessage)
 	return !isEcho && (latest == nil || strings.TrimSpace(latest.Content) != strings.TrimSpace(messageContent))
+}
+
+func hasBossListMessage(messages []models.Message, lastMessage string, messageContent string) bool {
+	lastMessage = strings.TrimSpace(lastMessage)
+	messageContent = strings.TrimSpace(messageContent)
+	for _, msg := range messages {
+		if msg.SenderIsAgent || msg.MessageType == "system_message" {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == messageContent {
+			return true
+		}
+		if lastMessage != "" && (content == lastMessage || strings.HasSuffix(content, "\n"+lastMessage)) {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanBossHistoryContent(content string) string {

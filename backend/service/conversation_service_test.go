@@ -38,6 +38,16 @@ func TestShouldImportBossListMessage(t *testing.T) {
 	}
 }
 
+func TestHasBossListMessageFindsOlderCandidateMessage(t *testing.T) {
+	messages := []models.Message{
+		{SenderIsAgent: false, MessageType: "user_message", Content: "BOSS candidate\nsame"},
+		{SenderIsAgent: true, MessageType: "ai_draft", Content: "draft"},
+	}
+	if !hasBossListMessage(messages, "same", "BOSS candidate\nsame") {
+		t.Fatal("existing candidate list message should block repeat import")
+	}
+}
+
 func TestCleanBossHistoryContent(t *testing.T) {
 	if got := cleanBossHistoryContent(" 已读 你好 "); got != "你好" {
 		t.Fatalf("expected cleaned read status, got %q", got)

@@ -16,13 +16,16 @@ func TestWithKnowledgeHint(t *testing.T) {
 }
 
 func TestBossSearchCity(t *testing.T) {
-	if got := bossSearchCity("福建省厦门市思明区"); got != "厦门市思明区" {
+	if got := bossSearchCity("福建省厦门市思明区"); got != "思明区" {
 		t.Fatalf("unexpected city: %q", got)
 	}
-	if got := bossSearchCity("福建省莆田市城厢区"); got != "莆田市城厢区" {
+	if got := bossSearchCity("福建省莆田市城厢区"); got != "城厢区" {
 		t.Fatalf("unexpected city: %q", got)
 	}
-	if got := bossSearchCity("北京市朝阳区"); got != "北京市朝阳区" {
+	if got := bossSearchCity("北京市朝阳区"); got != "朝阳区" {
+		t.Fatalf("unexpected city: %q", got)
+	}
+	if got := bossSearchCity("厦门市"); got != "厦门市" {
 		t.Fatalf("unexpected city: %q", got)
 	}
 }

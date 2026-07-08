@@ -316,7 +316,7 @@ func (b *BossAssistantController) DeleteChat(c *gin.Context) {
 }
 
 func (b *BossAssistantController) draftReplyBossChats(imported *service.ImportBossChatsResult, ownerID uint) {
-	if (!bossAIDraftReplyEnabled() && !bossAIAutoReplyEnabled()) || imported == nil || b.ai == nil || b.messages == nil || ownerID == 0 {
+	if !bossAIDraftReplyEnabled() || imported == nil || b.ai == nil || b.messages == nil || ownerID == 0 {
 		return
 	}
 	for _, item := range latestImportedBossVisitorMessages(imported.NewVisitorMessages) {
@@ -357,13 +357,6 @@ func (b *BossAssistantController) createBossChatAIDraft(item service.ImportedBos
 		return
 	}
 	content := strings.TrimSpace(aiResult.Content)
-	if bossAIAutoReplyEnabled() {
-		if err := b.sendBossChatAIReply(item, ownerID, content); err == nil {
-			return
-		} else {
-			log.Printf("BOSS AI auto reply failed, keep draft: conversation=%d err=%v", item.ConversationID, err)
-		}
-	}
 	if _, err := b.messages.CreateAIDraft(item.ConversationID, content, aiResult.SourcesUsed); err != nil {
 		log.Printf("BOSS AI draft save failed: conversation=%d err=%v", item.ConversationID, err)
 	}

@@ -267,6 +267,38 @@ def test_click_boss_chat_item_in_list_scrolls_until_match() -> None:
         boss_browser.time.sleep = old_sleep
 
 
+def test_open_boss_chat_item_menu_in_list_scrolls_until_match() -> None:
+    import app.boss_browser as boss_browser
+
+    calls = {"opens": 0, "scrolls": 0, "resets": 0}
+    old_open = boss_browser.open_boss_chat_item_menu
+    old_scroll = boss_browser.scroll_boss_chat_list
+    old_reset = boss_browser.reset_boss_chat_list_scroll
+    old_sleep = boss_browser.time.sleep
+
+    def fake_open(page, name, role):
+        calls["opens"] += 1
+        return calls["opens"] == 3
+
+    def fake_scroll(page):
+        calls["scrolls"] += 1
+        return True
+
+    try:
+        boss_browser.open_boss_chat_item_menu = fake_open
+        boss_browser.scroll_boss_chat_list = fake_scroll
+        boss_browser.reset_boss_chat_list_scroll = lambda page: calls.__setitem__("resets", calls["resets"] + 1)
+        boss_browser.time.sleep = lambda seconds: None
+
+        assert boss_browser.open_boss_chat_item_menu_in_list(object(), "ccccccc", "閿簥鎿嶄綔宸?", attempts=5)
+        assert calls == {"opens": 3, "scrolls": 2, "resets": 1}
+    finally:
+        boss_browser.open_boss_chat_item_menu = old_open
+        boss_browser.scroll_boss_chat_list = old_scroll
+        boss_browser.reset_boss_chat_list_scroll = old_reset
+        boss_browser.time.sleep = old_sleep
+
+
 def test_select_city_does_not_fake_success_when_input_missing() -> None:
     import app.boss_browser as boss_browser
 
@@ -292,14 +324,14 @@ def test_select_city_does_not_fake_success_when_input_missing() -> None:
 def test_split_boss_city_area() -> None:
     import app.boss_browser as boss_browser
 
-    assert boss_browser.split_boss_city_area("莆田市城厢区") == ("莆田", "城厢区")
+    assert boss_browser.split_boss_city_area("莆田市城厢区") == ("莆田市", "城厢区")
     assert boss_browser.split_boss_city_area("莆田") == ("莆田", "")
 
 
 def test_city_action_result_falls_back_to_city_when_area_missing() -> None:
     import app.boss_browser as boss_browser
 
-    assert boss_browser.city_action_result("莆田市城厢区", "莆田", "城厢区", False) == "city=莆田; area=城厢区:not-selected"
+    assert boss_browser.city_action_result("莆田市城厢区", "莆田市", "城厢区", False) == "city=莆田市; area=城厢区:not-selected"
 
 
 if __name__ == "__main__":
@@ -319,6 +351,7 @@ if __name__ == "__main__":
     test_incremental_read_chats_skips_non_chat_page()
     test_incremental_read_chats_does_not_start_browser_when_closed()
     test_click_boss_chat_item_in_list_scrolls_until_match()
+    test_open_boss_chat_item_menu_in_list_scrolls_until_match()
     test_select_city_does_not_fake_success_when_input_missing()
     test_split_boss_city_area()
     test_city_action_result_falls_back_to_city_when_area_missing()

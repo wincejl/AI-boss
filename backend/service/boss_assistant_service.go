@@ -580,6 +580,11 @@ func bossSearchCity(location string) string {
 			break
 		}
 	}
+	if index := strings.LastIndex(location, "市"); index >= 0 && index+len("市") < len(location) {
+		if area := strings.TrimSpace(location[index+len("市"):]); area != "" {
+			return area
+		}
+	}
 	return strings.TrimSpace(location)
 }
 
