@@ -15,6 +15,7 @@ interface RegionSelectProps {
   value: string;
   onChange: (value: string) => void;
   className?: string;
+  bossMode?: boolean;
 }
 
 const REGION_TREE = rawRegionTree as unknown as RegionNode[];
@@ -90,16 +91,27 @@ function findInitialCodes(value: string): {
 function buildLocationValue(
   province: RegionNode | undefined,
   city: RegionNode | undefined,
-  area: RegionNode | undefined
+  area: RegionNode | undefined,
+  includeProvince = true
 ): string {
-  return [province?.name, city?.name, area?.name].filter(Boolean).join("");
+  return [includeProvince ? province?.name : "", city?.name, area?.name].filter(Boolean).join("");
 }
 
-export function RegionSelect({ value, onChange, className }: RegionSelectProps) {
+export function RegionSelect({ value, onChange, className, bossMode = false }: RegionSelectProps) {
   const initialCodes = useMemo(() => findInitialCodes(value), [value]);
   const [provinceCode, setProvinceCode] = useState(initialCodes.provinceCode);
   const [cityCode, setCityCode] = useState(initialCodes.cityCode);
   const [areaCode, setAreaCode] = useState(initialCodes.areaCode);
+  const allCityOptions = useMemo(
+    () =>
+      REGION_TREE.flatMap((province) =>
+        (province.children ?? []).map((city) => ({
+          ...city,
+          provinceCode: province.code,
+        }))
+      ),
+    []
+  );
 
   useEffect(() => {
     setProvinceCode(initialCodes.provinceCode);
@@ -108,7 +120,7 @@ export function RegionSelect({ value, onChange, className }: RegionSelectProps) 
   }, [initialCodes.provinceCode, initialCodes.cityCode, initialCodes.areaCode]);
 
   const selectedProvince = REGION_TREE.find((item) => item.code === provinceCode);
-  const cityOptions = selectedProvince?.children ?? [];
+  const cityOptions = bossMode ? allCityOptions : selectedProvince?.children ?? [];
   const selectedCity = cityOptions.find((item) => item.code === cityCode);
   const areaOptions = selectedCity?.children ?? [];
   const selectedArea = areaOptions.find((item) => item.code === areaCode);
@@ -117,7 +129,53 @@ export function RegionSelect({ value, onChange, className }: RegionSelectProps) 
     const province = REGION_TREE.find((item) => item.code === nextProvinceCode);
     const city = province?.children?.find((item) => item.code === nextCityCode);
     const area = city?.children?.find((item) => item.code === nextAreaCode);
-    onChange(buildLocationValue(province, city, area));
+    onChange(buildLocationValue(province, city, area, !bossMode));
+  }
+
+  if (bossMode) {
+    return (
+      <div className={cn("grid min-w-0 gap-2 sm:grid-cols-2", className)}>
+        <select
+          className={SELECT_CLASS}
+          value={cityCode}
+          onChange={(event) => {
+            const nextCityCode = event.target.value;
+            const city = allCityOptions.find((item) => item.code === nextCityCode);
+            const nextProvinceCode = city?.provinceCode ?? "";
+            setProvinceCode(nextProvinceCode);
+            setCityCode(nextCityCode);
+            setAreaCode("");
+            emit(nextProvinceCode, nextCityCode, "");
+          }}
+          aria-label="城市"
+        >
+          <option value="">城市/区县</option>
+          {allCityOptions.map((item) => (
+            <option key={item.code} value={item.code}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={SELECT_CLASS}
+          value={areaCode}
+          onChange={(event) => {
+            const nextAreaCode = event.target.value;
+            setAreaCode(nextAreaCode);
+            emit(provinceCode, cityCode, nextAreaCode);
+          }}
+          disabled={!selectedCity || areaOptions.length === 0}
+          aria-label="区县"
+        >
+          <option value="">区县/镇</option>
+          {areaOptions.map((item) => (
+            <option key={item.code} value={item.code}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
   }
 
   return (

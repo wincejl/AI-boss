@@ -91,17 +91,18 @@ export async function fetchConversationDetail(
 }
 
 /** 关闭会话（进入历史/归档）。访客再次发消息会自动 reopen（B 方案）。 */
-export async function importBossChats(limit = 20): Promise<{
+export async function importBossChats(limit = 50, incremental = false): Promise<{
   conversations: ConversationSummary[];
   imported: number;
   updated: number;
+  closed: number;
   skipped: number;
   message: string;
 }> {
   const res = await fetch(apiUrl("/agent/boss-assistant/import-chats"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...getAgentHeaders() },
-    body: JSON.stringify({ limit }),
+    body: JSON.stringify({ limit, incremental }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -112,6 +113,7 @@ export async function importBossChats(limit = 20): Promise<{
     conversations: Array.isArray(data.conversations) ? data.conversations : [],
     imported: Number(data.imported ?? 0),
     updated: Number(data.updated ?? 0),
+    closed: Number(data.closed ?? 0),
     skipped: Number(data.skipped ?? 0),
     message: data.message ?? "",
   };
@@ -125,6 +127,18 @@ export async function closeConversation(conversationId: number): Promise<void> {
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
     throw new Error((j as { error?: string }).error || `关闭会话失败(${res.status})`);
+  }
+}
+
+export async function deleteBossChatConversation(conversationId: number): Promise<void> {
+  const res = await fetch(apiUrl("/agent/boss-assistant/delete-chat"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...getAgentHeaders() },
+    body: JSON.stringify({ conversation_id: conversationId }),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error((j as { error?: string }).error || `删除BOSS联系人失败(${res.status})`);
   }
 }
 

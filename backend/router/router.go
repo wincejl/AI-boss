@@ -146,6 +146,7 @@ func RegisterRoutes(r *gin.Engine, controllers ControllerSet, wsHandler gin.Hand
 		routes.POST("/agent/boss-assistant/search", controllers.BossAssistant.SearchCandidates)
 		routes.POST("/agent/boss-assistant/import-candidates", controllers.BossAssistant.ImportCandidates)
 		routes.POST("/agent/boss-assistant/import-chats", controllers.BossAssistant.ImportChats)
+		routes.POST("/agent/boss-assistant/delete-chat", controllers.BossAssistant.DeleteChat)
 		routes.PUT("/agent/boss-assistant/config", controllers.BossAssistant.SaveConfig)
 
 		// Health（健康检查）

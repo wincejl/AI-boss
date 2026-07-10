@@ -82,9 +82,15 @@ class BossBrowserCandidatesRequest(BaseModel):
 
 class BossBrowserChatsRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
+    incremental: bool = False
 
 
 class BossBrowserSendMessageRequest(BaseModel):
     name: str
     role: str = ""
     content: str
+
+
+class BossBrowserDeleteChatRequest(BaseModel):
+    name: str
+    role: str = ""

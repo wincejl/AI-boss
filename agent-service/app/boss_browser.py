@@ -10,8 +10,9 @@ from typing import Any
 
 try:
     from DrissionPage import ChromiumOptions, ChromiumPage
+    from DrissionPage.common import Keys
 except ModuleNotFoundError:
-    ChromiumOptions = ChromiumPage = None
+    ChromiumOptions = ChromiumPage = Keys = None
 
 
 @dataclass
@@ -29,6 +30,7 @@ class BossSearchPayload:
 
 _page: ChromiumPage | None = None
 _lock = threading.Lock()
+_boss_chat_signatures: dict[str, str] = {}
 
 
 def _page_is_connected(page: ChromiumPage) -> bool:
@@ -50,16 +52,31 @@ def get_page() -> ChromiumPage:
             _page = None
         co = ChromiumOptions()
         co.set_argument("--start-maximized")
-        # ponytail: controlled Chrome profile is enough for local demos; add explicit user-data-dir only if login persistence fails.
+        profile_dir = os.getenv(
+            "BOSS_BROWSER_PROFILE",
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".dev", "boss-chrome-profile")),
+        )
+        os.makedirs(profile_dir, exist_ok=True)
+        co.set_user_data_path(profile_dir)
+        # ponytail: one stable local Chrome profile beats trying to control the user's normal locked browser profile.
         _page = ChromiumPage(co)
         return _page
+
+
+def get_connected_page() -> ChromiumPage | None:
+    global _page
+    with _lock:
+        if _page is not None and _page_is_connected(_page):
+            return _page
+        _page = None
+        return None
 
 
 def open_boss_search() -> ChromiumPage:
     page = get_page()
     url = os.getenv("BOSS_SEARCH_URL", "https://www.zhipin.com/web/chat/search")
     current_url = str(page.url)
-    if "zhipin.com" not in current_url or "/web/chat/" not in current_url:
+    if "zhipin.com" not in current_url or "/web/chat/search" not in current_url:
         page.get(url)
         time.sleep(1.2)
     ensure_search_page(page, url)
@@ -76,6 +93,14 @@ def open_boss_chat() -> ChromiumPage:
     return page
 
 
+def is_boss_chat_page(page: ChromiumPage) -> bool:
+    try:
+        current_url = str(page.url)
+    except Exception:
+        return False
+    return "zhipin.com" in current_url and "/web/chat/index" in current_url
+
+
 def search_candidates(payload: BossSearchPayload) -> dict[str, Any]:
     page = open_boss_search()
     login_lines = page_snapshot(page)
@@ -87,7 +112,10 @@ def search_candidates(payload: BossSearchPayload) -> dict[str, Any]:
     if payload.category:
         actions.append(select_category(page, payload.category))
     if payload.city:
-        actions.append(select_city(page, payload.city))
+        city_action = select_city(page, payload.city)
+        actions.append(city_action)
+        if city_action.endswith(":not-found"):
+            raise RuntimeError(city_action)
     if payload.keyword:
         actions.append(fill_keyword(page, payload.keyword))
     if payload.education:
@@ -154,29 +182,51 @@ def read_candidates(limit: int = 10) -> dict[str, Any]:
     }
 
 
-def read_chats(limit: int = 20) -> dict[str, Any]:
+def read_chats(limit: int = 20, incremental: bool = False) -> dict[str, Any]:
     limit = max(1, min(50, int(limit or 20)))
-    page = open_boss_chat()
+    if incremental:
+        page = get_connected_page()
+        if page is None:
+            return {"ok": True, "message": "skip BOSS chat sync: controlled browser is not open", "chats": []}
+    else:
+        page = open_boss_chat()
+    if incremental and not is_boss_chat_page(page):
+        return {"ok": True, "message": "skip BOSS chat sync: current page is not chat", "chats": []}
     login_lines = page_snapshot(page)
     if is_login_page(page, login_lines):
         raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
     time.sleep(0.6)
     chats = []
     seen: set[str] = set()
-    for raw in collect_boss_chat_items(page, limit):
+    if incremental:
+        reset_boss_chat_list_scroll(page)
+    raw_items = _collect_visible_boss_chat_items(page, limit) if incremental else collect_boss_chat_items(page, limit)
+    for raw in raw_items:
         item = parse_boss_chat(raw)
         key = item["key"]
         if not item["name"] or key in seen:
             continue
+        signature = boss_chat_signature(item)
+        if incremental and _boss_chat_signatures.get(key) == signature:
+            continue
         seen.add(key)
+        item["_signature"] = signature
         chats.append(item)
         if len(chats) >= limit:
             break
     for item in chats:
         item["messages"] = []
-        if click_boss_chat_item(page, item["name"], item["role"]):
-            time.sleep(0.4)
-            item["messages"] = collect_boss_chat_history(page, 40)
+        detail_matched = False
+        if not incremental and click_boss_chat_item(page, item["name"], item["role"]):
+            time.sleep(0.6)
+            if boss_chat_detail_matches(page, item["name"], item["role"]):
+                detail_matched = True
+                scroll_boss_chat_history_bottom(page)
+                time.sleep(0.5)
+                item["messages"] = collect_boss_chat_history(page, 40)
+        signature = item.pop("_signature", "")
+        if signature and (not incremental or detail_matched):
+            _boss_chat_signatures[item["key"]] = signature
     return {
         "ok": True,
         "message": f"read {len(chats)} BOSS chats",
@@ -196,9 +246,11 @@ def send_chat_message(name: str, role: str = "", content: str = "") -> dict[str,
     login_lines = page_snapshot(page)
     if is_login_page(page, login_lines):
         raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
-    if not click_boss_chat_item(page, name, role):
+    if not click_boss_chat_item_in_list(page, name, role):
         raise RuntimeError(f"BOSS chat not found in visible list: {name} {role}".strip())
     time.sleep(0.5)
+    if not boss_chat_detail_matches(page, name, role):
+        raise RuntimeError(f"BOSS chat target mismatch after click: {name} {role}".strip())
     if not fill_boss_chat_input(page, content):
         raise RuntimeError("BOSS chat input not found")
     time.sleep(0.25)
@@ -208,6 +260,27 @@ def send_chat_message(name: str, role: str = "", content: str = "") -> dict[str,
     if boss_chat_input_text(page) == content:
         raise RuntimeError("BOSS send button clicked but message stayed in input")
     return {"ok": True, "message": "BOSS message sent", "target": f"{name} {role}".strip()}
+
+
+def delete_chat(name: str, role: str = "") -> dict[str, Any]:
+    name = (name or "").strip()
+    role = (role or "").strip()
+    if not name:
+        raise RuntimeError("BOSS chat target name is required")
+    page = open_boss_chat()
+    login_lines = page_snapshot(page)
+    if is_login_page(page, login_lines):
+        raise RuntimeError("BOSS controlled browser is not logged in; login in the opened Chrome window, then retry")
+    if not open_boss_chat_item_menu_in_list(page, name, role):
+        raise RuntimeError(f"BOSS chat menu not found: {name} {role}".strip())
+    time.sleep(0.25)
+    if not js_click_text(page, "删除", exact=True) and not js_click_text(page, "删除", exact=False):
+        raise RuntimeError("BOSS delete menu item not found")
+    time.sleep(0.35)
+    if not (js_click_text(page, "确定", exact=True) or js_click_text(page, "确认", exact=True)):
+        raise RuntimeError("BOSS delete confirm button not found")
+    time.sleep(0.8)
+    return {"ok": True, "message": "BOSS chat deleted", "target": f"{name} {role}".strip()}
 
 
 def click_boss_chat_item(page: ChromiumPage, name: str, role: str = "") -> bool:
@@ -243,6 +316,117 @@ def click_boss_chat_item(page: ChromiumPage, name: str, role: str = "") -> bool:
         if (!target) return false;
         target.scrollIntoView({ block: 'center', inline: 'center' });
         (target.closest('li') || target).click();
+        return true;
+        """,
+        name,
+        role,
+    )
+
+
+def click_boss_chat_item_in_list(page: ChromiumPage, name: str, role: str = "", attempts: int = 10) -> bool:
+    reset_boss_chat_list_scroll(page)
+    for _ in range(max(1, attempts)):
+        if click_boss_chat_item(page, name, role):
+            return True
+        if not scroll_boss_chat_list(page):
+            break
+        time.sleep(0.25)
+    return False
+
+
+def open_boss_chat_item_menu_in_list(page: ChromiumPage, name: str, role: str = "", attempts: int = 10) -> bool:
+    reset_boss_chat_list_scroll(page)
+    for _ in range(max(1, attempts)):
+        if open_boss_chat_item_menu(page, name, role):
+            return True
+        if not scroll_boss_chat_list(page):
+            break
+        time.sleep(0.25)
+    return False
+
+
+def boss_chat_detail_matches(page: ChromiumPage, name: str, role: str = "") -> bool:
+    try:
+        script = """
+            return (function() {
+              function clean(el) { return (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(); }
+              function visible(el) {
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+              }
+              const name = __NAME__;
+              const nodes = [...document.querySelectorAll('main,section,article,header,div')].filter(visible)
+                .map(el => ({ text: clean(el), rect: el.getBoundingClientRect() }))
+                .filter(item => item.rect.left > Math.min(520, window.innerWidth * 0.34))
+                .filter(item => item.text.includes(name))
+                .filter(item => item.text.length <= 3000)
+                .sort((a, b) => a.rect.left - b.rect.left || b.text.length - a.text.length);
+              return nodes.slice(0, 3).map(item => item.text).join('\\n');
+            })();
+            """.replace("__NAME__", json.dumps(name, ensure_ascii=False))
+        text = str(page.run_js(script) or "")
+    except Exception:
+        return False
+    return boss_chat_detail_text_matches(text, name, role)
+
+
+def boss_chat_detail_text_matches(text: str, name: str, role: str = "") -> bool:
+    normalized = re.sub(r"\s+", " ", text or "")
+    return bool(name and name in normalized and (not role or role in normalized))
+
+
+def open_boss_chat_item_menu(page: ChromiumPage, name: str, role: str = "") -> bool:
+    return run_js_bool(
+        page,
+        """
+        const name = args[0];
+        const role = args[1];
+        const panes = all('div,ul,section')
+          .map(el => ({ el, rect: el.getBoundingClientRect() }))
+          .filter(item => visible(item.el))
+          .filter(item => item.el.scrollHeight > item.el.clientHeight + 80)
+          .filter(item => item.rect.left < Math.min(900, window.innerWidth * 0.55))
+          .filter(item => item.rect.width >= 220 && item.rect.width <= 700)
+          .filter(item => item.rect.height >= 220)
+          .sort((a, b) => b.rect.height - a.rect.height);
+        const root = panes[0]?.el || document;
+        const rows = [...root.querySelectorAll('.geek-item-wrap,.geek-item,li,article,section,div')]
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => item.text.includes(name))
+          .filter(item => !role || item.text.includes(role))
+          .filter(item => item.rect.left < Math.min(760, window.innerWidth * 0.42))
+          .filter(item => item.rect.width >= 180 && item.rect.height >= 36 && item.rect.height <= 180)
+          .sort((a, b) => a.rect.top - b.rect.top || a.text.length - b.text.length);
+        const row = rows[0]?.el.closest('.geek-item-wrap') || rows[0]?.el;
+        if (!row) return false;
+        row.scrollIntoView({ block: 'center', inline: 'center' });
+        for (const type of ['mouseenter', 'mouseover', 'mousemove']) {
+          row.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+        const rowRect = row.getBoundingClientRect();
+        const op = row.querySelector('.user-operation,.icon-operate,.list-operate') ||
+          [...row.querySelectorAll('img,button,span,div')]
+            .map(el => ({ el, rect: el.getBoundingClientRect(), cls: String(el.className || '') }))
+            .filter(item => /operate|operation|more|menu/i.test(item.cls) || item.rect.right > rowRect.right - 80)
+            .sort((a, b) => b.rect.left - a.rect.left)[0]?.el;
+        const doc = row.ownerDocument || document;
+        const x = Math.max(rowRect.left + 8, rowRect.right - 28);
+        const y = rowRect.top + rowRect.height / 2;
+        const target = (op && (op.querySelector('img,button,span,div') || op)) || doc.elementFromPoint(x, y);
+        if (!target) return false;
+        if (op) {
+          op.style.visibility = 'visible';
+          op.style.opacity = '1';
+          if (getComputedStyle(op).display === 'none') op.style.display = 'block';
+        }
+        for (const type of ['mousemove', 'mousedown', 'mouseup', 'click']) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+        }
+        for (const type of ['mousedown', 'mouseup', 'click']) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+        target.click();
         return true;
         """,
         name,
@@ -337,7 +521,7 @@ def boss_chat_input_text(page: ChromiumPage) -> str:
         return ""
 
 
-def collect_boss_chat_items(page: ChromiumPage, limit: int) -> list[str]:
+def _collect_visible_boss_chat_items(page: ChromiumPage, limit: int) -> list[str]:
     script = f"""
     return (function(limit) {{
       function cleanText(value) {{ return String(value || '').replace(/\\s+/g, '\\n').replace(/\\n+/g, '\\n').trim(); }}
@@ -388,6 +572,68 @@ def collect_boss_chat_items(page: ChromiumPage, limit: int) -> list[str]:
         raw = []
     return [str(item).strip() for item in raw if str(item).strip()]
 
+def collect_boss_chat_items(page: ChromiumPage, limit: int) -> list[str]:
+    collected: list[str] = []
+    seen: set[str] = set()
+    stagnant = 0
+    for _ in range(10):
+        before = len(collected)
+        for raw in _collect_visible_boss_chat_items(page, limit):
+            key = re.sub(r"\s+", " ", raw).strip()[:120]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append(raw)
+            if len(collected) >= limit:
+                return collected
+        stagnant = stagnant + 1 if len(collected) == before else 0
+        if stagnant >= 2 or not scroll_boss_chat_list(page):
+            break
+        time.sleep(0.25)
+    return collected
+
+
+def scroll_boss_chat_list(page: ChromiumPage) -> bool:
+    # ponytail: DOM-based BOSS list detection is heuristic; replace with official chat API if one is available.
+    return run_js_bool(
+        page,
+        """
+        const panes = all('div,ul,section')
+          .map(el => ({ el, rect: el.getBoundingClientRect() }))
+          .filter(item => visible(item.el))
+          .filter(item => item.el.scrollHeight > item.el.clientHeight + 80)
+          .filter(item => item.rect.left < Math.min(900, window.innerWidth * 0.55))
+          .filter(item => item.rect.width >= 220 && item.rect.width <= 700)
+          .filter(item => item.rect.height >= 220)
+          .sort((a, b) => b.rect.height - a.rect.height);
+        const target = panes[0]?.el;
+        if (!target) return false;
+        const before = target.scrollTop;
+        const max = target.scrollHeight - target.clientHeight;
+        target.scrollTop = Math.min(max, before + Math.max(160, Math.floor(target.clientHeight * 0.8)));
+        target.dispatchEvent(new Event('scroll', { bubbles: true }));
+        return target.scrollTop > before;
+        """,
+    )
+
+
+def reset_boss_chat_list_scroll(page: ChromiumPage) -> None:
+    run_js_bool(
+        page,
+        """
+        const panes = all('div,ul,section')
+          .map(el => ({ el, rect: el.getBoundingClientRect() }))
+          .filter(item => visible(item.el))
+          .filter(item => item.el.scrollHeight > item.el.clientHeight + 80)
+          .filter(item => item.rect.left < Math.min(900, window.innerWidth * 0.55))
+          .filter(item => item.rect.width >= 220 && item.rect.width <= 700)
+          .filter(item => item.rect.height >= 220)
+          .sort((a, b) => b.rect.height - a.rect.height);
+        if (panes[0]) panes[0].el.scrollTop = 0;
+        return true;
+        """,
+    )
+
 
 def collect_boss_chat_history(page: ChromiumPage, limit: int = 40) -> list[dict[str, str]]:
     script = f"""
@@ -408,13 +654,9 @@ def collect_boss_chat_history(page: ChromiumPage, limit: int = 40) -> list[dict[
           }};
         }})
         .filter(item => item.sender && item.content);
+      const latest = items.slice(Math.max(0, items.length - limit));
       const out = [];
-      const seen = new Set();
-      for (const item of items) {{
-        const key = item.sender + '|' + item.content;
-        if (seen.has(key)) continue;
-        if (out.some(old => old.content === item.content && old.sender === item.sender)) continue;
-        seen.add(key);
+      for (const item of latest) {{
         out.push(item);
         if (out.length >= limit) break;
       }}
@@ -436,12 +678,45 @@ def collect_boss_chat_history(page: ChromiumPage, limit: int = 40) -> list[dict[
     return messages
 
 
+def scroll_boss_chat_history_bottom(page: ChromiumPage) -> bool:
+    # ponytail: background incremental sync avoids detail scrolling; full sync only needs the visible newest end.
+    return run_js_bool(
+        page,
+        """
+        const target = document.querySelector('.conversation-message');
+        if (!target) return false;
+        target.scrollTop = target.scrollHeight;
+        target.dispatchEvent(new Event('scroll', { bubbles: true }));
+        return true;
+        """,
+    )
+
+
+def boss_chat_signature(item: dict[str, str]) -> str:
+    return "|".join(
+        [
+            str(item.get("key", "")).strip(),
+            str(item.get("last_sender", "")).strip(),
+            str(item.get("last_message", "")).strip(),
+            str(item.get("time_text", "")).strip(),
+        ]
+    )
+
+
 def parse_boss_chat(raw: str) -> dict[str, str]:
     text = normalize_card_text(raw)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    status_prefix = r"^\[(已读|未读|送达|宸茶|鏈|閫佽揪)\]\s*"
+    status_names = {"已读", "未读", "送达", "宸茶", "鏈", "閫佽揪"}
+    agent_status_prefix = r"^\[(送达|閫佽揪)\]\s*"
+    # ponytail: BOSS list "[已读]20" means the candidate's message was read, not that we sent it.
+    last_sender = "agent" if any(re.match(agent_status_prefix, line) for line in lines) else "candidate"
     cleaned = [re.sub(r"^\[(已读|未读)\]\s*", "", line).strip() for line in lines]
     time_text = next((line for line in cleaned if re.fullmatch(r"\d{1,2}:\d{2}|昨天|\d{2}月\d{2}日|\d{4}\.\d{2}\.\d{2}", line)), "")
     body = [line for line in cleaned if line and line != time_text]
+    body = [re.sub(status_prefix, "", line).strip() for line in body]
+    while body and re.fullmatch(r"\d+", body[0]):
+        body = body[1:]
     name, role, last_message = "", "", ""
     if len(body) >= 3 and not re.search(r"\s", body[0]):
         name, role = body[0], body[1]
@@ -454,12 +729,15 @@ def parse_boss_chat(raw: str) -> dict[str, str]:
         last_message = body[1] if len(body) > 1 else ""
     if not re.fullmatch(r"[\u4e00-\u9fa5A-Za-z*]{1,12}", name or ""):
         name = ""
-    key = "|".join([name, role])
+    if name in status_names or not role:
+        name, role, last_message = "", "", ""
+    key = "|".join([name, role]) if name else ""
     return {
         "key": key,
         "name": name,
         "role": role,
         "last_message": last_message,
+        "last_sender": last_sender,
         "time_text": time_text,
         "profile": "\n".join(lines[:8]),
     }
@@ -630,63 +908,160 @@ def click_sidebar_search(page: ChromiumPage) -> bool:
 
 
 def select_city(page: ChromiumPage, city: str) -> str:
+    city = (city or "").strip()
     if not city:
         return ""
+    search_city, area = split_boss_city_area(city)
     frame = search_frame(page)
     if frame:
         try:
             input_ele = frame.ele("css:.city-wrap input", timeout=1)
             input_ele.click()
-            input_ele.input(city, clear=True)
+            input_ele.input(search_city, clear=True)
             time.sleep(0.6)
             result = frame.ele("css:.search-result-item", timeout=1)
             if result:
                 result.click()
                 time.sleep(0.3)
-                return f"city={city}"
+                if boss_search_city_selected(page, search_city):
+                    return city_action_result(city, search_city, area, select_boss_area(page, area))
         except Exception:
             pass
     ok = run_js_bool(
         page,
         """
         const text = args[0];
-        const doc = searchDoc();
-        const wrap = doc.querySelector('.city-wrap');
-        const input = doc.querySelector('.city-wrap input');
-        if (!wrap || !input) return false;
+        const wrap = all('.city-wrap, .city-or-area-name, .search-city-kw')
+          .filter(visible)
+          .map(el => ({ el, rect: el.getBoundingClientRect() }))
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0]?.el;
+        if (!wrap) return false;
         wrap.click();
+        const input = activeInput() ||
+          all('.city-wrap input, .city-or-area-name input, input[placeholder*="城市"], input[placeholder*="区域"], input[placeholder*="地区"], input[type="text"], input:not([type])')
+            .filter(visible)
+            .find(input => /城市|区域|地区|搜索/.test(input.placeholder || '') || input.getBoundingClientRect().top < window.innerHeight * 0.35);
+        if (!input) return false;
         input.focus();
         setInputValue(input, text);
         pressEnter(input);
         return true;
         """,
-        city,
+        search_city,
     )
     time.sleep(0.5 if ok else 0.1)
-    if js_click_text(page, city, exact=True) or js_click_text(page, city.replace("区", "").replace("县", ""), exact=True):
-        return f"city={city}"
-    return f"city={city}" if ok else f"city={city}:not-found"
+    if click_city_text(page, search_city) and boss_search_city_selected(page, search_city):
+        return city_action_result(city, search_city, area, select_boss_area(page, area))
+    if boss_search_city_selected(page, search_city):
+        return city_action_result(city, search_city, area, select_boss_area(page, area))
+    return f"city={city}:not-found"
+
+
+def city_action_result(city: str, search_city: str, area: str, area_selected: bool) -> str:
+    if area and not area_selected:
+        return f"city={search_city}; area={area}:not-selected"
+    return f"city={city}"
+
+
+def split_boss_city_area(city: str) -> tuple[str, str]:
+    city = (city or "").strip()
+    if "市" in city and not city.endswith("市"):
+        head, tail = city.split("市", 1)
+        return (head + "市").strip(), tail.strip()
+    return city, ""
+
+
+def select_boss_area(page: ChromiumPage, area: str) -> bool:
+    if not area:
+        return True
+    run_js_bool(page, "const el = all('.city-wrap, .city-or-area-name, .search-city-kw').filter(visible)[0]; if (!el) return false; el.click(); return true;")
+    time.sleep(0.2)
+    if not click_city_text(page, area):
+        close_boss_city_search(page)
+        return False
+    time.sleep(0.2)
+    if boss_search_city_selected(page, area):
+        return True
+    close_boss_city_search(page)
+    return False
+
+
+def close_boss_city_search(page: ChromiumPage) -> None:
+    target = search_frame(page) or page
+    try:
+        target.run_js(
+            """
+            const input = document.querySelector('.city-wrap input');
+            if (input) {
+              input.value = '';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.blur();
+            }
+            document.body.click();
+            """
+        )
+    except Exception:
+        pass
+
+
+def click_city_text(page: ChromiumPage, city: str) -> bool:
+    short_city = city.replace("区", "").replace("县", "")
+    return js_click_text(page, city, exact=True) or (short_city != city and js_click_text(page, short_city, exact=True))
+
+
+def boss_search_city_selected(page: ChromiumPage, city: str) -> bool:
+    short_city = city.replace("区", "").replace("县", "")
+    return run_js_bool(
+        page,
+        """
+        const names = args[0].filter(Boolean);
+        const nodes = all('.city-wrap, .city-or-area-name, .search-city-kw')
+          .filter(visible)
+          .map(el => clean(el));
+        return nodes.some(text => names.some(name => text.includes(name)));
+        """,
+        [city, short_city],
+    )
 
 
 def select_category(page: ChromiumPage, category: str) -> str:
-    if not category or "不限" in category:
+    if not category:
         return ""
-    clicked = run_js_bool(
+    target_category = "不限职位" if "不限" in category else category
+    clicked = open_job_category_dropdown(page)
+    time.sleep(0.3 if clicked else 0.1)
+    if click_job_dropdown_option(page, target_category):
+        return f"职位={target_category}"
+    if click_job_dropdown_option(page, "不限职位"):
+        return "职位=不限职位"
+    return f"职位={target_category}:not-found"
+
+
+def open_job_category_dropdown(page: ChromiumPage) -> bool:
+    return run_js_bool(
         page,
         """
         const doc = searchDoc();
-        const current = doc.querySelector('.search-current-job, .search-job-list-C .ui-dropmenu-label');
-        if (!current) return false;
-        current.click();
+        const current = doc.querySelector('.search-current-job, .search-job-list-C .ui-dropmenu-label, .job-selecter-wrap .ui-dropmenu-label, .job-selecter-wrap');
+        if (current) {
+          current.click();
+          return true;
+        }
+        const input = doc.querySelector('input.search-input');
+        if (!input) return false;
+        const inputRect = input.getBoundingClientRect();
+        const target = [...doc.querySelectorAll('button,a,span,div')]
+          .filter(visible)
+          .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
+          .filter(item => item.rect.top >= inputRect.top - 24 && item.rect.bottom <= inputRect.bottom + 24)
+          .filter(item => item.rect.right <= inputRect.left + 30 && item.rect.left >= inputRect.left - 360)
+          .filter(item => item.text && item.text.length <= 20)
+          .sort((a, b) => Math.abs(a.rect.right - inputRect.left) - Math.abs(b.rect.right - inputRect.left))[0]?.el;
+        if (!target) return false;
+        target.click();
         return true;
         """,
     )
-    time.sleep(0.3 if clicked else 0.1)
-    if click_job_dropdown_option(page, category):
-        return f"职位={category}"
-    if click_job_dropdown_option(page, "不限职位"):
-        return "职位=不限职位"
-    return f"职位={category}:not-found"
 
 
 def click_job_dropdown_option(page: ChromiumPage, value: str) -> bool:
@@ -695,19 +1070,39 @@ def click_job_dropdown_option(page: ChromiumPage, value: str) -> bool:
         """
         const value = args[0];
         const doc = searchDoc();
-        const list = doc.querySelector('.search-job-list-C .ui-dropmenu-list, .ui-dropmenu-visible .ui-dropmenu-list');
-        if (!list) return false;
-        const items = [...list.querySelectorAll('li,div,span')].filter(visible);
+        const lists = [...doc.querySelectorAll('.search-job-list-C .ui-dropmenu-list, .job-selecter-wrap .ui-dropmenu-list, .ui-dropmenu-visible .ui-dropmenu-list, .ui-dropmenu-list')]
+          .filter(visible);
+        const roots = lists.length ? lists : [doc];
+        const input = doc.querySelector('input.search-input');
+        const inputRect = input ? input.getBoundingClientRect() : null;
+        const items = roots.flatMap(root => [...root.querySelectorAll('li,div,span,a')].filter(visible));
         const target = items
           .map(el => ({ el, text: clean(el), rect: el.getBoundingClientRect() }))
-          .filter(item => item.text === value)
-          .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0];
+          .filter(item => !inputRect || item.rect.top <= inputRect.bottom + 260)
+          .filter(item => item.text === value || (value.includes('不限') && item.text.includes('不限')))
+          .sort((a, b) => Math.abs(a.rect.top - (inputRect ? inputRect.bottom : 0)) - Math.abs(b.rect.top - (inputRect ? inputRect.bottom : 0)))[0];
         if (!target) return false;
         target.el.click();
         return true;
         """,
         value,
     )
+
+
+def boss_search_keyword_value(page: ChromiumPage) -> str:
+    try:
+        return str(
+            page.run_js(
+                """
+                const doc = searchDoc();
+                const input = doc.querySelector('input.search-input');
+                return input ? String(input.value || input.getAttribute('value') || '').trim() : '';
+                """
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
 
 
 def fill_keyword(page: ChromiumPage, keyword: str) -> str:
@@ -719,7 +1114,8 @@ def fill_keyword(page: ChromiumPage, keyword: str) -> str:
             input_ele = frame.ele("css:input.search-input", timeout=1)
             input_ele.click()
             input_ele.input(keyword, clear=True)
-            return f"keyword={keyword}"
+            if boss_search_keyword_value(page) == keyword:
+                return f"keyword={keyword}"
         except Exception:
             pass
     ok = run_js_bool(
@@ -739,6 +1135,9 @@ def fill_keyword(page: ChromiumPage, keyword: str) -> str:
 
 
 def click_search(page: ChromiumPage) -> str:
+    if press_search_enter(page):
+        time.sleep(0.5)
+        return "search=entered"
     ok = run_js_bool(
         page,
         """
@@ -764,6 +1163,26 @@ def click_search(page: ChromiumPage) -> str:
         """,
     )
     return "search=clicked" if ok else "search=not-found"
+
+
+def press_search_enter(page: ChromiumPage) -> bool:
+    if Keys is None:
+        return False
+    targets = []
+    frame = search_frame(page)
+    if frame:
+        targets.append(frame)
+    targets.append(page)
+    for target in targets:
+        try:
+            input_ele = target.ele("css:input.search-input", timeout=1)
+            input_ele.click()
+            time.sleep(0.05)
+            page.actions.type(Keys.ENTER)
+            return True
+        except Exception:
+            pass
+    return False
 
 
 def click_text(page: ChromiumPage, text: str, label: str) -> str:

@@ -6,8 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/features/agent/hooks/useAuth";
 import { useConversations } from "@/features/agent/hooks/useConversations";
 import { useMessages } from "@/features/agent/hooks/useMessages";
-import { importBossChats, initInternalConversation } from "@/features/agent/services/conversationApi";
-import { closeConversation } from "@/features/agent/services/conversationApi";
+import { closeConversation, deleteBossChatConversation, importBossChats, initInternalConversation } from "@/features/agent/services/conversationApi";
 import { toast } from "@/hooks/useToast";
 import { useProfile } from "@/features/agent/hooks/useProfile";
 import { Profile } from "@/features/agent/types";
@@ -139,6 +138,11 @@ export function DashboardShell() {
       ) ?? null,
     [conversations, selectedConversationId]
   );
+  const isBossConversation = selectedConversation?.referrer?.startsWith("boss://chat/") ?? false;
+  const selectedConversationTitle = useMemo(() => {
+    if (!isBossConversation) return undefined;
+    return selectedConversation?.notes?.match(/^BOSS候选人[:：]\s*(.+)$/m)?.[1]?.trim() || undefined;
+  }, [isBossConversation, selectedConversation?.notes]);
 
   // 消息层：负责消息列表、未读状态、访客详情以及 WebSocket
   const {
@@ -166,7 +170,7 @@ export function DashboardShell() {
     refreshConversations,
     hasConversation,
     soundEnabled,
-    forceIncludeAIMessages: isInternalChat,
+    forceIncludeAIMessages: isInternalChat || isBossConversation,
   });
 
   // 左侧选择会话时，记录关键字用于消息高亮
@@ -224,15 +228,21 @@ export function DashboardShell() {
   const handleCloseConversation = useCallback(async () => {
     if (!selectedConversationId) return;
     try {
-      await closeConversation(selectedConversationId);
-      toast.success(t("agent.chat.toast.conversationClosed"));
+      if (isBossConversation) {
+        if (!window.confirm("确定删除这个 BOSS 联系人吗？删除后 BOSS 消息会被清空。")) return;
+        await deleteBossChatConversation(selectedConversationId);
+        toast.success("已删除BOSS联系人");
+      } else {
+        await closeConversation(selectedConversationId);
+        toast.success(t("agent.chat.toast.conversationClosed"));
+      }
       // 清空选中并刷新列表/详情
       selectConversation(null);
       refreshConversations();
     } catch (e) {
       toast.error((e as Error).message || t("agent.chat.toast.closeFailed"));
     }
-  }, [refreshConversations, selectConversation, selectedConversationId]);
+  }, [isBossConversation, refreshConversations, selectConversation, selectedConversationId, t]);
 
   // 手动刷新消息与访客详情
   const handleRefreshChat = useCallback(() => {
@@ -291,9 +301,9 @@ export function DashboardShell() {
   const handleSyncBossChats = useCallback(async () => {
     setSyncingBossChats(true);
     try {
-      const result = await importBossChats(20);
+      const result = await importBossChats();
       await refreshConversations();
-      if (result.conversations[0]?.id) {
+      if (!selectedConversationId && result.conversations[0]?.id) {
         selectConversation(result.conversations[0].id);
       }
       toast.success(`已同步BOSS沟通：新增${result.imported}，更新${result.updated}`);
@@ -302,13 +312,13 @@ export function DashboardShell() {
     } finally {
       setSyncingBossChats(false);
     }
-  }, [refreshConversations, selectConversation]);
+  }, [refreshConversations, selectConversation, selectedConversationId]);
 
   const syncBossChatsQuietly = useCallback(async () => {
     if (bossChatPollingRef.current) return;
     bossChatPollingRef.current = true;
     try {
-      await importBossChats(20);
+      await importBossChats(20, true);
       await refreshConversations();
       if (selectedConversationId && selectedConversation?.referrer?.startsWith("boss://chat/")) {
         await refreshMessages(selectedConversationId);
@@ -337,7 +347,7 @@ export function DashboardShell() {
       }
     };
     poll();
-    const timer = window.setInterval(poll, 15000);
+    const timer = window.setInterval(poll, 5000);
     document.addEventListener("visibilitychange", poll);
     return () => {
       window.clearInterval(timer);
@@ -407,16 +417,18 @@ export function DashboardShell() {
           <>
             <ChatHeader
               conversationId={selectedConversationId}
+              title={selectedConversationTitle}
               lastSeenAt={conversationDetail?.last_seen_at}
               unreadCount={selectedUnreadCount}
               onMarkAllRead={handleMarkAllRead}
               onCloseConversation={handleCloseConversation}
+              closeTitle={isBossConversation ? "删除BOSS联系人" : undefined}
               onRefresh={handleRefreshChat}
               includeAIMessages={includeAIMessages}
               onToggleAIMessages={toggleAIMessages}
               soundEnabled={soundEnabled}
               onToggleSound={toggleSound}
-              hideAIToggle={isInternalChat}
+              hideAIToggle={isInternalChat || isBossConversation}
               mobileGutters={{
                 left: true,
                 right:
@@ -432,6 +444,7 @@ export function DashboardShell() {
               conversationId={selectedConversationId ?? null}
               onMarkMessagesRead={markMessagesAsRead}
               internalChatMode={isInternalChat}
+              onUseAIDraft={isBossConversation ? setMessageInput : undefined}
               bottomSlot={
                   <>
                     {!isInternalChat && remoteTypingDraft ? (

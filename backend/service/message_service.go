@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"log"
+	"strings"
 
 	"github.com/2930134478/AI-CS/backend/models"
 	"github.com/2930134478/AI-CS/backend/repository"
@@ -133,8 +134,7 @@ func (s *MessageService) CreateMessage(input CreateMessageInput) (*models.Messag
 	}
 
 	// 3. 触发 AI 回复（文本/识图或生图，具体由 AI 配置的 model_type 决定）
-	needAIReply := s.aiService != nil && conv.ChatMode == "ai" && (
-		(!input.SenderIsAgent) || (conv.ConversationType == "internal" && input.SenderIsAgent))
+	needAIReply := s.aiService != nil && conv.ChatMode == "ai" && ((!input.SenderIsAgent) || (conv.ConversationType == "internal" && input.SenderIsAgent))
 	if needAIReply {
 		go func() {
 			// 用于查找 AI 配置的用户 ID：访客对话用 AgentID，内部对话用发送者（客服）ID
@@ -235,6 +235,54 @@ func (s *MessageService) CreateMessage(input CreateMessageInput) (*models.Messag
 		}()
 	}
 
+	return message, nil
+}
+
+func (s *MessageService) CreateAIDraft(conversationID uint, content string, sourcesUsed string) (*models.Message, error) {
+	if s.db == nil {
+		return nil, errors.New("db is not initialized")
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, errors.New("content is required")
+	}
+
+	var (
+		conv    models.Conversation
+		message *models.Message
+	)
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", conversationID).First(&conv).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrConversationNotFound
+			}
+			return err
+		}
+		message = &models.Message{
+			ConversationID: conversationID,
+			SenderID:       0,
+			SenderIsAgent:  true,
+			Content:        content,
+			MessageType:    "user_message",
+			ChatMode:       "ai",
+			IsRead:         true,
+			SourcesUsed:    sourcesUsed,
+		}
+		if err := tx.Create(message).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
+			"updated_at": message.CreatedAt,
+		}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if s.hub != nil {
+		s.hub.BroadcastMessage(message.ConversationID, "new_message", message)
+		s.hub.BroadcastToAllAgents("new_message", message)
+	}
 	return message, nil
 }
 

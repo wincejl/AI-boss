@@ -67,6 +67,7 @@ interface MessageListProps {
   internalChatMode?: boolean;
   /** 访客侧左侧消息头像（key 为 sender_id） */
   leftAvatarBySenderId?: Record<number, string | null | undefined>;
+  onUseAIDraft?: (content: string) => void;
 }
 
 export function MessageList({
@@ -81,6 +82,7 @@ export function MessageList({
   bottomSlot,
   internalChatMode = false,
   leftAvatarBySenderId,
+  onUseAIDraft,
 }: MessageListProps) {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -520,10 +522,12 @@ export function MessageList({
               : message.content;
 
           const isAIMessage = Boolean(message.sender_is_agent) && message.sender_id === 0;
+          const isAIDraft = !internalChatMode && isAIMessage && message.chat_mode === "ai" && Boolean(onUseAIDraft);
           const hasShownTypewriter = typewriterSeenIdsRef.current.has(message.id);
           // 仅当不需要高亮搜索关键词、且该消息为 AI 回复、且从未展示过打字效果时才启用逐字显示
           const shouldTypewriter =
             isAIMessage &&
+            !isAIDraft &&
             !hasShownTypewriter &&
             keyword === "" &&
             !message.file_url &&
@@ -551,10 +555,12 @@ export function MessageList({
           const isCurrentUser = internalChatMode
             ? isSenderAgent && message.sender_id !== 0
             : currentUserIsAgent
-              ? isSenderAgent
+              ? isSenderAgent && (!isAIMessage || isAIDraft)
               : !isSenderAgent;
           const alignment = isCurrentUser ? "justify-end" : "justify-start";
-          const bubbleColor = isCurrentUser
+          const bubbleColor = isAIDraft
+            ? "bg-amber-50 text-amber-950 border border-amber-200 shadow-sm"
+            : isCurrentUser
             ? "bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20"
             : "bg-background/95 text-card-foreground border border-border/45 shadow-[0_1px_4px_rgba(15,23,42,0.06)]";
           // 拉开双方气泡圆角差异：自己消息更利落、对方消息更柔和，便于快速分辨
@@ -694,8 +700,11 @@ export function MessageList({
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-1 mt-1.5 px-0.5 text-[10px] text-muted-foreground/80">
-                  {isCurrentUser && (
+                <div className={`flex items-center gap-1 mt-1.5 px-0.5 text-[10px] text-muted-foreground/80 ${isCurrentUser ? "justify-end" : ""}`}>
+                  {isAIDraft ? (
+                    <span className="text-amber-700">AI草稿，未发送</span>
+                  ) : null}
+                  {isCurrentUser && !isAIDraft && (
                     <span className={receiptClass}>
                       {message.is_read ? "✓✓" : "✓"}
                     </span>
@@ -703,8 +712,8 @@ export function MessageList({
                   <span>{formatMessageTime(message.created_at)}</span>
                 </div>
                 {/* AI 回复的数据源标记（仅对方消息且存在 sources_used 时显示） */}
-                {!isCurrentUser && message.sources_used && (
-                  <div className="mt-1 text-[10px] text-muted-foreground flex flex-wrap gap-x-2 gap-y-0">
+                {(!isCurrentUser || isAIDraft) && message.sources_used && (
+                  <div className={`mt-1 text-[10px] text-muted-foreground flex flex-wrap gap-x-2 gap-y-0 ${isAIDraft ? "justify-end text-amber-700" : ""}`}>
                     {message.sources_used.split(",").map((s) => s.trim()).filter(Boolean).map((src) => (
                       <span key={src}>
                         {src === "knowledge_base" && t("agent.aiSource.kb")}
@@ -714,6 +723,19 @@ export function MessageList({
                     ))}
                   </div>
                 )}
+                {isAIDraft && onUseAIDraft ? (
+                  <div className="mt-2 flex justify-end">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => onUseAIDraft(message.content)}
+                    >
+                      采用AI草稿
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
           );

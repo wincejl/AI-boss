@@ -9,10 +9,12 @@ import { Bot } from "lucide-react";
 
 interface ChatHeaderProps {
   conversationId: number;
+  title?: string;
   lastSeenAt?: string | null;
   unreadCount: number;
   onMarkAllRead: () => void;
   onCloseConversation?: () => void;
+  closeTitle?: string;
   onRefresh: () => void;
   includeAIMessages?: boolean;
   onToggleAIMessages?: () => void;
@@ -25,10 +27,12 @@ interface ChatHeaderProps {
 
 export function ChatHeader({
   conversationId,
+  title,
   lastSeenAt,
   unreadCount,
   onMarkAllRead,
   onCloseConversation,
+  closeTitle,
   onRefresh,
   includeAIMessages = false,
   onToggleAIMessages,
@@ -41,7 +45,7 @@ export function ChatHeader({
     <div className="h-16 flex items-center justify-between px-4 bg-background flex-shrink-0 relative">
       <div className="z-10">
         <div className="font-semibold text-foreground">
-          {t("agent.chat.conversation")} #{conversationId}
+          {title || `${t("agent.chat.conversation")} #${conversationId}`}
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
           {lastSeenAt
@@ -114,7 +118,7 @@ export function ChatHeader({
         <Button
           variant="ghost"
           size="icon"
-          title={t("agent.chat.closeConversation")}
+          title={closeTitle ?? t("agent.chat.closeConversation")}
           onClick={onCloseConversation}
           disabled={!onCloseConversation}
         >
@@ -157,4 +161,3 @@ export function ChatHeader({
     </div>
   );
 }
-

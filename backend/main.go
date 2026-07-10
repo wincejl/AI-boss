@@ -179,6 +179,19 @@ func main() {
 	// 初始化默认管理员账号（如果不存在）
 	initDefaultAdmin(userRepo)
 
+	for _, seedPath := range []string{
+		filepath.Join(wd, "..", "docs", "recruitment-talk-script-seed.md"),
+		filepath.Join(wd, "docs", "recruitment-talk-script-seed.md"),
+	} {
+		if err := service.SeedRecruitmentTalkScripts(kbRepo, docRepo, seedPath); err == nil {
+			log.Printf("✅ 招聘话术知识库已导入: %s", seedPath)
+			break
+		} else if !os.IsNotExist(err) {
+			log.Printf("⚠️ 招聘话术知识库导入失败: %v", err)
+			break
+		}
+	}
+
 	//gin路由初始化
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
@@ -520,7 +533,7 @@ func main() {
 	analyticsController := controller.NewAnalyticsController(analyticsService, userService)
 	systemLogController := controller.NewSystemLogController(systemLogService, userService, appSettingRepo)
 	recruitmentController := controller.NewRecruitmentController(recruitmentService, userService)
-	bossAssistantController := controller.NewBossAssistantController(bossAssistantService, recruitmentService, conversationService, userService)
+	bossAssistantController := controller.NewBossAssistantController(bossAssistantService, recruitmentService, conversationService, userService, aiService, messageService)
 
 	appRouter.RegisterRoutes(
 		r,
