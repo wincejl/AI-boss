@@ -33,6 +33,7 @@ type RecruitmentAgentRunResult struct {
 	Stage                 string                  `json:"stage"`
 	MatchScore            int                     `json:"match_score"`
 	MatchReason           string                  `json:"match_reason"`
+	RiskFlags             []string                `json:"risk_flags"`
 	Draft                 string                  `json:"draft"`
 	NextAction            string                  `json:"next_action"`
 	RequiresHumanApproval bool                    `json:"requires_human_approval"`

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/2930134478/AI-CS/backend/models"
@@ -181,6 +180,33 @@ func (s *RecruitmentService) ListCandidates(requirementID uint) ([]models.Recrui
 	return s.repo.ListCandidates(requirementID)
 }
 
+func (s *RecruitmentService) RescoreCandidates(requirementID uint) (int, error) {
+	req, err := s.repo.GetRequirement(requirementID)
+	if err != nil {
+		return 0, err
+	}
+	candidates, err := s.repo.ListCandidates(requirementID)
+	if err != nil {
+		return 0, err
+	}
+	updated := 0
+	for i := range candidates {
+		item := &candidates[i]
+		score, reason, risks, nextAction := applyRecruitmentScore(req, item)
+		item.MatchScore = score
+		item.MatchReason = reason
+		item.RiskFlags = risks
+		if strings.TrimSpace(item.NextAction) == "" {
+			item.NextAction = nextAction
+		}
+		if err := s.repo.SaveCandidate(item); err != nil {
+			continue
+		}
+		updated++
+	}
+	return updated, nil
+}
+
 func (s *RecruitmentService) CreateCandidate(input CreateRecruitmentCandidateInput) (*models.RecruitmentCandidate, error) {
 	req, err := s.repo.GetRequirement(input.RequirementID)
 	if err != nil {
@@ -201,7 +227,7 @@ func (s *RecruitmentService) CreateCandidate(input CreateRecruitmentCandidateInp
 	if item.Name == "" {
 		return nil, errors.New("candidate name is required")
 	}
-	item.MatchScore, item.MatchReason = scoreCandidate(req, item)
+	item.MatchScore, item.MatchReason, item.RiskFlags, item.NextAction = applyRecruitmentScore(req, item)
 	if err := s.repo.SaveCandidate(item); err != nil {
 		return nil, err
 	}
@@ -258,7 +284,13 @@ func (s *RecruitmentService) UpdateCandidate(input UpdateRecruitmentCandidateInp
 		item.NextAction = cleanText(*input.NextAction)
 	}
 	if req, err := s.repo.GetRequirement(item.RequirementID); err == nil {
-		item.MatchScore, item.MatchReason = scoreCandidate(req, item)
+		score, reason, risks, nextAction := applyRecruitmentScore(req, item)
+		item.MatchScore = score
+		item.MatchReason = reason
+		item.RiskFlags = risks
+		if input.NextAction == nil {
+			item.NextAction = nextAction
+		}
 	}
 	if err := s.repo.SaveCandidate(item); err != nil {
 		return nil, err
@@ -369,6 +401,7 @@ func (s *RecruitmentService) RunAgent(ctx context.Context, candidateID uint) (*R
 
 	candidate.MatchScore = result.MatchScore
 	candidate.MatchReason = cleanText(result.MatchReason)
+	candidate.RiskFlags = cleanText(strings.Join(result.RiskFlags, "；"))
 	if strings.TrimSpace(result.NextAction) != "" {
 		candidate.NextAction = cleanText(result.NextAction)
 	}
@@ -423,7 +456,7 @@ func (s *RecruitmentService) loadRecruitmentKnowledge() string {
 }
 
 func buildLocalRecruitmentAgentResult(req *models.RecruitmentRequirement, candidate *models.RecruitmentCandidate, knowledgeContext string) *RecruitmentAgentRunResult {
-	score, reason := scoreCandidate(req, candidate)
+	scored := scoreRecruitmentCandidate(req, candidate)
 	events := []RecruitmentAgentEvent{
 		{Step: "score_match", Status: "ok", Message: "Local rule-based matching completed."},
 		{Step: "draft_message", Status: "ok", Message: "Local fallback draft generated."},
@@ -437,10 +470,11 @@ func buildLocalRecruitmentAgentResult(req *models.RecruitmentRequirement, candid
 	return &RecruitmentAgentRunResult{
 		ThreadID:              fmt.Sprintf("candidate-%d", candidate.ID),
 		Stage:                 "awaiting_human_approval",
-		MatchScore:            score,
-		MatchReason:           reason,
+		MatchScore:            scored.Score,
+		MatchReason:           scored.Reason,
+		RiskFlags:             splitRiskFlags(scored.RiskFlags),
+		NextAction:            withKnowledgeHint(scored.NextAction, knowledgeContext),
 		Draft:                 buildRecruitmentDraft(req, candidate),
-		NextAction:            withKnowledgeHint(nextRecruitmentAction(candidate), knowledgeContext),
 		RequiresHumanApproval: true,
 		Mode:                  "local",
 		Events:                events,
@@ -489,40 +523,21 @@ func withKnowledgeHint(action string, knowledgeContext string) string {
 	return action + "\nKnowledge hint: " + hint
 }
 
-func scoreCandidate(req *models.RecruitmentRequirement, candidate *models.RecruitmentCandidate) (int, string) {
-	haystack := normalizeForMatch(strings.Join([]string{
-		candidate.Name,
-		candidate.CurrentRole,
-		candidate.Location,
-		candidate.Tags,
-		candidate.Profile,
-	}, " "))
-	score := 0
-	reasons := []string{}
+func applyRecruitmentScore(req *models.RecruitmentRequirement, candidate *models.RecruitmentCandidate) (int, string, string, string) {
+	scored := scoreRecruitmentCandidate(req, candidate)
+	return scored.Score, scored.Reason, scored.RiskFlags, scored.NextAction
+}
 
-	roleTokens := tokens(req.Role)
-	for _, token := range roleTokens {
-		if containsToken(haystack, token) {
-			score += 30
-			reasons = append(reasons, "岗位关键词匹配: "+token)
-			break
-		}
+func splitRiskFlags(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
 	}
-	if req.Location != "" && containsToken(haystack, req.Location) {
-		score += 15
-		reasons = append(reasons, "地点匹配: "+req.Location)
-	}
-	score += weightedTokenScore(haystack, req.MustHave, 12, 35, &reasons, "硬性条件")
-	score += weightedTokenScore(haystack, req.NiceHave, 6, 18, &reasons, "加分条件")
-	score += weightedTokenScore(haystack, req.Tags, 8, 24, &reasons, "标签")
-	if score > 100 {
-		score = 100
-	}
-	if len(reasons) == 0 {
-		reasons = append(reasons, "需要人工复核")
-	}
-	sort.Strings(reasons)
-	return score, strings.Join(reasons, "；")
+	return strings.Split(raw, "；")
+}
+
+func scoreCandidate(req *models.RecruitmentRequirement, candidate *models.RecruitmentCandidate) (int, string) {
+	scored := scoreRecruitmentCandidate(req, candidate)
+	return scored.Score, scored.Reason
 }
 
 func weightedTokenScore(haystack string, raw string, perHit int, maxScore int, reasons *[]string, label string) int {

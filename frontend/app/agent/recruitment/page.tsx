@@ -42,6 +42,7 @@ import {
   fetchRecruitmentTimeline,
   generateRecruitmentDraft,
   importBossCandidates,
+  rescoreRecruitmentCandidates,
   runRecruitmentAgent,
   saveBossAssistantConfig,
   searchBossCandidates,
@@ -277,6 +278,14 @@ function scoreBadgeClass(score: number): string {
   if (score >= 75) return "bg-emerald-100 text-emerald-700 border-emerald-200";
   if (score >= 45) return "bg-amber-100 text-amber-700 border-amber-200";
   return "bg-slate-100 text-slate-700 border-slate-200";
+}
+
+function splitRiskFlags(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(/[;；]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function statusLabel(value: string): string {
@@ -672,8 +681,13 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
     try {
       setSyncingBossCandidates(true);
       const result = await importBossCandidates(requirementId, limit);
+      if ((result.rescored ?? 0) === 0) {
+        await rescoreRecruitmentCandidates(requirementId);
+      }
       await loadCandidates(requirementId);
-      toast.success(`BOSS候选人已同步：新增 ${result.imported}，跳过 ${result.skipped}`);
+      toast.success(
+        `BOSS候选人已同步：新增 ${result.imported}，跳过 ${result.skipped}${result.rescored ? `，重算 ${result.rescored} 人` : ""}`
+      );
     } finally {
       setSyncingBossCandidates(false);
     }
@@ -1405,7 +1419,27 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                             </Badge>
                             <Badge variant="outline">{statusLabel(candidate.contact_status)}</Badge>
                           </div>
-                          <div className="mt-2 text-xs text-muted-foreground">{candidate.match_reason}</div>
+                          <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+                            <div>{candidate.match_reason || "暂无评分理由"}</div>
+                            {splitRiskFlags(candidate.risk_flags).length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {splitRiskFlags(candidate.risk_flags).map((flag) => (
+                                  <Badge
+                                    key={`${candidate.id}-${flag}`}
+                                    variant="outline"
+                                    className="border-rose-200 bg-rose-50 text-rose-700"
+                                  >
+                                    {flag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : null}
+                            {candidate.next_action ? (
+                              <div className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1 text-blue-900">
+                                下一步：{candidate.next_action}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button

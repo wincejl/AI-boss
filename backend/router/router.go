@@ -131,6 +131,7 @@ func RegisterRoutes(r *gin.Engine, controllers ControllerSet, wsHandler gin.Hand
 		routes.DELETE("/agent/recruitment/requirements", controllers.Recruitment.DeleteAllRequirements)
 		routes.PUT("/agent/recruitment/requirements/:id", controllers.Recruitment.UpdateRequirement)
 		routes.DELETE("/agent/recruitment/requirements/:id", controllers.Recruitment.DeleteRequirement)
+		routes.POST("/agent/recruitment/requirements/:id/rescore", controllers.Recruitment.RescoreCandidates)
 		routes.GET("/agent/recruitment/candidates", controllers.Recruitment.ListCandidates)
 		routes.POST("/agent/recruitment/candidates", controllers.Recruitment.CreateCandidate)
 		routes.PUT("/agent/recruitment/candidates/:id", controllers.Recruitment.UpdateCandidate)

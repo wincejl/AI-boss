@@ -243,3 +243,25 @@ func (r *RecruitmentController) RunAgent(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"result": result, "candidate": candidate})
 }
+
+func (r *RecruitmentController) RescoreCandidates(c *gin.Context) {
+	if !requirePermission(c, r.users, string(service.PermRecruitment)) {
+		return
+	}
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid requirement id"})
+		return
+	}
+	updated, err := r.service.RescoreCandidates(uint(id))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	candidates, err := r.service.ListCandidates(uint(id))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": updated, "candidates": candidates})
+}

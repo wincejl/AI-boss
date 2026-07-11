@@ -57,6 +57,7 @@ class RecruitmentAgentResponse(BaseModel):
     stage: str
     match_score: int = Field(ge=0, le=100)
     match_reason: str
+    risk_flags: list[str] = Field(default_factory=list)
     draft: str
     next_action: str
     requires_human_approval: bool = True

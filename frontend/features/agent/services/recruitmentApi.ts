@@ -36,6 +36,7 @@ export interface RecruitmentCandidate {
   profile: string;
   match_score: number;
   match_reason: string;
+  risk_flags: string;
   contact_status: "new" | "contacted" | "replied" | "consented" | "group_invited" | "rejected";
   consent_to_contact: boolean;
   private_contact: string;
@@ -124,6 +125,7 @@ export interface BossImportCandidatesResult {
   candidates: RecruitmentCandidate[];
   imported: number;
   skipped: number;
+  rescored?: number;
   message: string;
 }
 
@@ -138,6 +140,7 @@ export interface RecruitmentAgentResult {
   stage: string;
   match_score: number;
   match_reason: string;
+  risk_flags?: string[];
   draft: string;
   next_action: string;
   requires_human_approval: boolean;
@@ -364,5 +367,17 @@ export async function importBossCandidates(requirementId: number, limit: number)
     body: JSON.stringify({ requirement_id: requirementId, limit }),
   });
   if (!res.ok) throw await parseApiError(res, "BOSS candidate import failed");
+  return res.json();
+}
+
+export async function rescoreRecruitmentCandidates(requirementId: number): Promise<{
+  updated: number;
+  candidates: RecruitmentCandidate[];
+}> {
+  const res = await fetch(apiUrl(`/agent/recruitment/requirements/${requirementId}/rescore`), {
+    method: "POST",
+    headers: getAgentHeaders(),
+  });
+  if (!res.ok) throw await parseApiError(res, "重新计算候选人匹配分失败");
   return res.json();
 }

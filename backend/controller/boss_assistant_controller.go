@@ -157,10 +157,12 @@ func (b *BossAssistantController) ImportCandidates(c *gin.Context) {
 		seen[key] = true
 		created = append(created, item)
 	}
+	rescored, _ := b.recruitment.RescoreCandidates(req.RequirementID)
 	c.JSON(http.StatusOK, gin.H{
 		"candidates": created,
 		"imported":   len(created),
 		"skipped":    skipped,
+		"rescored":   rescored,
 		"message":    result.Message,
 	})
 }

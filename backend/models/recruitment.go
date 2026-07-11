@@ -38,6 +38,7 @@ type RecruitmentCandidate struct {
 	Profile          string    `json:"profile" gorm:"type:text"`
 	MatchScore       int       `json:"match_score" gorm:"index"`
 	MatchReason      string    `json:"match_reason" gorm:"type:text"`
+	RiskFlags        string    `json:"risk_flags" gorm:"type:text"`
 	ContactStatus    string    `json:"contact_status" gorm:"size:32;index;default:new"`
 	ConsentToContact bool      `json:"consent_to_contact" gorm:"default:false"`
 	PrivateContact   string    `json:"private_contact" gorm:"size:255"`

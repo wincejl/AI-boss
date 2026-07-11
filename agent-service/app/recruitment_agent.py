@@ -35,6 +35,7 @@ class AgentState(TypedDict, total=False):
     stage: str
     match_score: int
     match_reason: str
+    risk_flags: list[str]
     draft: str
     next_action: str
     requires_human_approval: bool
@@ -85,6 +86,7 @@ def run_recruitment_agent(payload: RecruitmentAgentRequest) -> RecruitmentAgentR
         stage=result.get("stage", "awaiting_human_approval"),
         match_score=int(result.get("match_score", 0)),
         match_reason=str(result.get("match_reason", "")),
+        risk_flags=[str(item) for item in result.get("risk_flags", [])],
         draft=str(result.get("draft", "")),
         next_action=str(result.get("next_action", "")),
         requires_human_approval=bool(result.get("requires_human_approval", True)),
@@ -112,18 +114,22 @@ def normalize_context(state: AgentState) -> dict[str, Any]:
 def score_match(state: AgentState) -> dict[str, Any]:
     requirement = RecruitmentRequirement(**state.get("requirement", {}))
     candidate = RecruitmentCandidate(**state.get("candidate", {}))
-    rule_score, rule_reason = heuristic_score(requirement, candidate)
+    from .recruitment_scoring import score_candidate_match
+
+    rule_score, rule_reason, risk_flags, next_action = score_candidate_match(requirement, candidate)
     semantic_score = compute_semantic_similarity(requirement, candidate)
     score = _combine_scores(rule_score, semantic_score)
     if semantic_score is not None:
         msg = f"总分{score}（规则分{rule_score} + 语义分{semantic_score}）: {rule_reason}"
         match_reason = f"规则分{rule_score}；{rule_reason}；语义相似度分{semantic_score}"
     else:
-        msg = f"Score {score}: {rule_reason}"
+        msg = f"总分{score}: {rule_reason}"
         match_reason = f"规则分{rule_score}；{rule_reason}"
     return {
         "match_score": score,
         "match_reason": match_reason,
+        "risk_flags": risk_flags,
+        "next_action": next_action,
         "stage": "matched",
         "events": [
             {
@@ -158,9 +164,11 @@ def draft_message(state: AgentState) -> dict[str, Any]:
 
 def request_human_approval(state: AgentState) -> dict[str, Any]:
     candidate = RecruitmentCandidate(**state.get("candidate", {}))
-    next_action = with_knowledge_hint(
-        next_action_for(candidate), str(state.get("knowledge_context", ""))
-    )
+    next_action = clean_text(str(state.get("next_action", "")))
+    if not next_action:
+        next_action = with_knowledge_hint(
+            next_action_for(candidate), str(state.get("knowledge_context", ""))
+        )
     return {
         "next_action": next_action,
         "stage": "awaiting_human_approval",
@@ -173,6 +181,10 @@ def request_human_approval(state: AgentState) -> dict[str, Any]:
             }
         ],
     }
+
+
+def clean_text(value: str) -> str:
+    return value.strip()
 
 
 def normalize_dict(value: dict[str, Any]) -> dict[str, Any]:
@@ -227,15 +239,19 @@ def parse_hard_requirements(requirement: RecruitmentRequirement) -> dict[str, An
         "" if "不限" in requirement.job_category else requirement.job_category,
         requirement.title,
     )
+    education_raw = (requirement.education_requirement or "").strip()
+    if not education_raw or education_raw == "不限":
+        education_raw = map_school_requirement(filters.get("院校要求", ""))
+    experience_raw = first_non_empty(filters.get("经验要求", ""), filters.get("工作经验", ""))
     return {
         "keyword": keyword,
         "location": requirement.location,
         "age": parse_age_range(requirement.age_requirement),
-        "education": parse_education_range(requirement.education_requirement),
-        "experience": parse_experience_range(filters.get("经验要求", "")),
+        "education": parse_education_range(education_raw),
+        "experience": parse_experience_range(experience_raw),
         "salary": parse_salary_range(filters.get("薪资区间", "")),
         "major": parse_major_requirement(filters.get("专业要求", "")),
-        "activity": filters.get("活跃度", ""),
+        "activity": first_non_empty(filters.get("活跃度", ""), filters.get("活跃状态", "")),
         "job_status": filters.get("求职状态", ""),
         "gender": filters.get("性别要求", ""),
         "position": filters.get("职位要求", ""),
@@ -243,6 +259,21 @@ def parse_hard_requirements(requirement: RecruitmentRequirement) -> dict[str, An
         "exclusions": parse_exclusion_tokens(requirement.must_have),
         "raw_filters": filters,
     }
+
+
+def map_school_requirement(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value or value == "不限":
+        return "不限"
+    if "博士" in value:
+        return "博士"
+    if "硕士" in value:
+        return "硕士及以上"
+    if "本科" in value:
+        return "本科及以上"
+    if "大专" in value:
+        return "大专及以上"
+    return value
 
 
 def parse_filter_pairs(raw: str) -> dict[str, str]:
@@ -414,12 +445,18 @@ def parse_candidate_education(text: str) -> dict[str, Any]:
 def parse_candidate_experience(text: str) -> dict[str, Any]:
     if any(key in text for key in ["应届", "在校", "毕业生"]):
         return {"raw": "应届/在校", "years": 0, "category": "fresh_or_student"}
-    hit = re.search(r"(\d+)\s*年(?:以上)?(?:工作|相关|岗位|服务|餐饮|实习)?经验", text)
+    hit = re.search(r"(\d+)\s*年(?:以上)?(?:工作|相关|岗位|服务|餐饮|实习|采购|管理)?经验", text)
     if hit:
         return {"raw": hit.group(0), "years": int(hit.group(1)), "category": "years"}
     hit = re.search(r"经验\s*(\d+)\s*年", text)
     if hit:
         return {"raw": hit.group(0), "years": int(hit.group(1)), "category": "years"}
+    hit = re.search(r"(\d+)\s*年以上", text)
+    if hit:
+        return {"raw": hit.group(0), "years": int(hit.group(1)), "category": "years"}
+    hit = re.search(r"(?m)^\s*(\d+)\s*年(?:以上)?\s*$", text)
+    if hit:
+        return {"raw": hit.group(0).strip(), "years": int(hit.group(1)), "category": "years"}
     return {"raw": "", "years": None, "category": ""}
 
 
@@ -451,7 +488,7 @@ def parse_candidate_salary(text: str) -> dict[str, Any]:
 
 
 def parse_candidate_activity(text: str) -> str:
-    for value in ["刚刚活跃", "今日活跃", "3日内活跃", "近一周活跃", "近一个月活跃"]:
+    for value in ["刚刚活跃", "今日活跃", "本周活跃", "3日内活跃", "2周内活跃", "近一周活跃", "近一个月活跃"]:
         if value in text:
             return value
     return ""
@@ -491,57 +528,6 @@ def summarize_candidate_profile(parsed: dict[str, Any]) -> str:
     if parsed.get("major", {}).get("raw"):
         parts.append(f"专业={parsed['major']['raw']}")
     return "候选人解析: " + "；".join(parts)
-
-
-def heuristic_score(
-    requirement: RecruitmentRequirement, candidate: RecruitmentCandidate
-) -> tuple[int, str]:
-    haystack = " ".join(
-        [
-            candidate.name,
-            candidate.current_role,
-            candidate.location,
-            candidate.tags,
-            candidate.profile,
-            candidate.last_message,
-        ]
-    ).lower()
-    score = 0
-    reasons: list[str] = []
-
-    for token in tokens(requirement.role):
-        if token.lower() in haystack:
-            score += 30
-            reasons.append(f"job keyword matched: {token}")
-            break
-
-    if requirement.location and requirement.location.lower() in haystack:
-        score += 15
-        reasons.append(f"location matched: {requirement.location}")
-
-    score += weighted_token_score(haystack, requirement.must_have, 12, 35, reasons, "must-have")
-    score += weighted_token_score(haystack, requirement.nice_have, 6, 18, reasons, "nice-have")
-    score += weighted_token_score(haystack, requirement.tags, 8, 24, reasons, "tag")
-
-    if score > 100:
-        score = 100
-    if not reasons:
-        reasons.append("manual review required")
-    return score, "; ".join(sorted(reasons))
-
-
-def weighted_token_score(
-    haystack: str, raw: str, per_hit: int, max_score: int, reasons: list[str], label: str
-) -> int:
-    total = 0
-    for token in tokens(raw):
-        if token.lower() in haystack:
-            total += per_hit
-            reasons.append(f"{label} matched: {token}")
-        if total >= max_score:
-            return max_score
-    return total
-
 
 
 def _combine_scores(rule_score: int, semantic_score: float | None) -> int:
