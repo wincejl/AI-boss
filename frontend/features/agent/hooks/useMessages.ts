@@ -67,11 +67,17 @@ export function useMessages({
   const wsToken = getAgentWSToken() ?? undefined;
   const typingSeqRef = useRef(0);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const currentConversationIdRef = useRef<number | null>(conversationId);
+  const loadMessagesSeqRef = useRef(0);
+
+  currentConversationIdRef.current = conversationId;
 
   const refreshConversationDetail = useCallback(
     async (id: number) => {
       const detail = await fetchConversationDetail(id, agentId ?? undefined);
-      setConversationDetail(detail);
+      if (currentConversationIdRef.current === id) {
+        setConversationDetail(detail);
+      }
       // 同时更新对话列表中的 last_seen_at（用于判断在线状态）
       if (detail) {
         updateConversation(id, (conv) => ({
@@ -80,7 +86,7 @@ export function useMessages({
         }));
       }
     },
-    [updateConversation]
+    [agentId, updateConversation]
   );
 
   const updateContactInfo = useCallback(
@@ -179,23 +185,39 @@ export function useMessages({
   const loadMessages = useCallback(
     async (id: number, includeAI?: boolean) => {
       const include = includeAI ?? effectiveIncludeAIMessages;
+      const requestSeq = ++loadMessagesSeqRef.current;
       setLoadingMessages(true);
       try {
         const data = await fetchMessages(id, include);
-        setMessages(data);
+        if (
+          currentConversationIdRef.current === id &&
+          requestSeq === loadMessagesSeqRef.current
+        ) {
+          setMessages(data);
+        }
       } catch (error) {
         console.error("拉取消息失败:", error);
       } finally {
-        setLoadingMessages(false);
+        if (
+          currentConversationIdRef.current === id &&
+          requestSeq === loadMessagesSeqRef.current
+        ) {
+          setLoadingMessages(false);
+        }
       }
     },
     [effectiveIncludeAIMessages]
   );
 
   useEffect(() => {
+    loadMessagesSeqRef.current += 1;
+    setMessages([]);
+    setConversationDetail(null);
+    setRemoteTypingDraft("");
+    setAiThinking(false);
+    setLoadingMessages(false);
+
     if (!conversationId || !agentId) {
-      setMessages([]);
-      setConversationDetail(null);
       return;
     }
     loadMessages(conversationId, effectiveIncludeAIMessages);

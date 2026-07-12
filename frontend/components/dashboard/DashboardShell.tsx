@@ -144,6 +144,10 @@ export function DashboardShell() {
     return selectedConversation?.notes?.match(/^BOSS候选人[:：]\s*(.+)$/m)?.[1]?.trim() || undefined;
   }, [isBossConversation, selectedConversation?.notes]);
 
+  useEffect(() => {
+    setMessageInput("");
+  }, [selectedConversationId]);
+
   // 消息层：负责消息列表、未读状态、访客详情以及 WebSocket
   const {
     messages,
@@ -477,7 +481,7 @@ export function DashboardShell() {
                   <Checkbox
                     id="internal-need-web-search"
                     checked={needWebSearch}
-                    onCheckedChange={(v) => setNeedWebSearch(Boolean(v))}
+                    onCheckedChange={(v: boolean | "indeterminate") => setNeedWebSearch(Boolean(v))}
                   />
                   <Label htmlFor="internal-need-web-search" className="cursor-pointer font-normal">
                     {t("agent.internalChat.webSearchThisTurn")}
