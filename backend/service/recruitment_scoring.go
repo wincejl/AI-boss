@@ -22,10 +22,10 @@ var activityScores = map[string]int{
 }
 
 var jobStatusScores = map[string]int{
-	"离职-随时到岗":  10,
-	"在职-考虑机会":  8,
-	"在职-月内到岗":  7,
-	"在职-暂不考虑":  2,
+	"离职-随时到岗": 10,
+	"在职-考虑机会": 8,
+	"在职-月内到岗": 7,
+	"在职-暂不考虑": 2,
 }
 
 type recruitmentScoreResult struct {
@@ -91,7 +91,14 @@ func scoreRecruitmentCandidate(req *models.RecruitmentRequirement, candidate *mo
 		total = 40
 	}
 
-	reasons = append(reasons, scoreBonus(parsedReq, parsedCand, req)...)
+	mustHavePts, mustHaveReasons, mustHaveRisks := scoreMustHave(parsedReq, parsedCand, candidate)
+	total += mustHavePts
+	reasons = append(reasons, mustHaveReasons...)
+	risks = append(risks, mustHaveRisks...)
+
+	bonusPts, bonusReasons := scoreBonus(parsedReq, parsedCand, candidate)
+	total += bonusPts
+	reasons = append(reasons, bonusReasons...)
 
 	if total > 100 {
 		total = 100
@@ -116,27 +123,28 @@ type parsedRequirement struct {
 	Experience parsedExperienceRange
 	Activity   string
 	JobStatus  string
+	MustHave   []string
 	Bonus      []string
 	Exclusions []string
 	Major      parsedMajor
 }
 
 type parsedCandidate struct {
-	Age          *int
-	AgeRaw       string
-	Education    string
-	EducationRank *int
-	ExperienceYears *int
-	ExperienceRaw string
+	Age                *int
+	AgeRaw             string
+	Education          string
+	EducationRank      *int
+	ExperienceYears    *int
+	ExperienceRaw      string
 	ExperienceCategory string
-	CurrentRole  string
-	ExpectedCity string
-	Activity     string
-	JobStatus    string
-	MajorRaw     string
-	MajorName    string
-	Tags         []string
-	ResumeText   string
+	CurrentRole        string
+	ExpectedCity       string
+	Activity           string
+	JobStatus          string
+	MajorRaw           string
+	MajorName          string
+	Tags               []string
+	ResumeText         string
 }
 
 type parsedRange struct {
@@ -182,6 +190,7 @@ func parseHardRequirements(req *models.RecruitmentRequirement) parsedRequirement
 		educationRaw = mapSchoolRequirement(filters["院校要求"])
 	}
 	experienceRaw := firstNonEmpty(filters["经验要求"], filters["工作经验"])
+	mustHave, exclusions := parseMustHaveTokens(req.MustHave)
 	return parsedRequirement{
 		Keyword:    keyword,
 		Location:   strings.TrimSpace(req.Location),
@@ -190,8 +199,9 @@ func parseHardRequirements(req *models.RecruitmentRequirement) parsedRequirement
 		Experience: parseExperienceRange(experienceRaw),
 		Activity:   firstNonEmpty(filters["活跃度"], filters["活跃状态"]),
 		JobStatus:  filters["求职状态"],
+		MustHave:   mustHave,
 		Bonus:      recruitmentTokens(req.NiceHave),
-		Exclusions: parseExclusionTokens(req.MustHave),
+		Exclusions: exclusions,
 		Major:      parseMajorRequirement(filters["专业要求"]),
 	}
 }
@@ -459,12 +469,39 @@ func scoreExclusions(parsedReq parsedRequirement, parsedCand parsedCandidate, ca
 	return risks
 }
 
-func scoreBonus(parsedReq parsedRequirement, parsedCand parsedCandidate, req *models.RecruitmentRequirement) []string {
+func scoreMustHave(parsedReq parsedRequirement, parsedCand parsedCandidate, candidate *models.RecruitmentCandidate) (int, []string, []string) {
 	reasons := make([]string, 0)
-	haystack := candidateHaystack(parsedCand, &models.RecruitmentCandidate{Tags: req.NiceHave})
+	risks := make([]string, 0)
+	haystack := candidateHaystack(parsedCand, candidate)
+	score := 0
+	for _, token := range parsedReq.MustHave {
+		if strings.Contains(haystack, normalizeForMatch(token)) {
+			if score < 12 {
+				score += 4
+			}
+			reasons = append(reasons, "重点要求匹配："+token)
+			continue
+		}
+		if len(risks) < 3 {
+			risks = append(risks, "重点要求待确认："+token)
+		}
+	}
+	if score > 12 {
+		score = 12
+	}
+	return score, reasons, risks
+}
+
+func scoreBonus(parsedReq parsedRequirement, parsedCand parsedCandidate, candidate *models.RecruitmentCandidate) (int, []string) {
+	reasons := make([]string, 0)
+	haystack := candidateHaystack(parsedCand, candidate)
 	haystack = normalizeForMatch(strings.Join([]string{haystack, parsedCand.ResumeText, strings.Join(parsedCand.Tags, " ")}, " "))
+	score := 0
 	for _, token := range parsedReq.Bonus {
 		if strings.Contains(haystack, normalizeForMatch(token)) {
+			if score < 9 {
+				score += 3
+			}
 			reasons = append(reasons, "加分项命中："+token)
 		}
 	}
@@ -472,12 +509,16 @@ func scoreBonus(parsedReq parsedRequirement, parsedCand parsedCandidate, req *mo
 	if majorName != "" {
 		candidateMajor := firstNonEmpty(parsedCand.MajorName, parsedCand.MajorRaw)
 		if candidateMajor != "" && strings.Contains(candidateMajor, majorName) {
+			score += 4
 			reasons = append(reasons, "专业匹配："+candidateMajor)
 		} else if parsedReq.Major.Required {
 			reasons = append(reasons, "专业未匹配：要求"+parsedReq.Major.Raw)
 		}
 	}
-	return reasons
+	if score > 10 {
+		score = 10
+	}
+	return score, reasons
 }
 
 func nextActionForScore(score int, risks []string) string {
@@ -614,20 +655,31 @@ func parseMajorRequirement(raw string) parsedMajor {
 	return major
 }
 
-func parseExclusionTokens(raw string) []string {
+func parseMustHaveTokens(raw string) ([]string, []string) {
+	mustHave := make([]string, 0)
 	exclusions := make([]string, 0)
-	prefixes := []string{"排除", "不要", "不能", "不接受", "禁止"}
+	exclusionPrefixes := []string{"排除", "排除项", "不要", "不能", "不接受", "不考虑", "拒绝", "禁止"}
 	for _, token := range recruitmentTokens(raw) {
 		cleaned := token
-		for _, prefix := range prefixes {
-			cleaned = strings.TrimPrefix(cleaned, prefix)
+		isExclusion := false
+		for _, prefix := range exclusionPrefixes {
+			if strings.HasPrefix(cleaned, prefix) {
+				isExclusion = true
+				cleaned = strings.TrimPrefix(cleaned, prefix)
+				break
+			}
 		}
 		cleaned = strings.TrimLeft(cleaned, ":： ")
-		if cleaned != "" {
-			exclusions = append(exclusions, cleaned)
+		if cleaned == "" {
+			continue
 		}
+		if isExclusion {
+			exclusions = append(exclusions, cleaned)
+			continue
+		}
+		mustHave = append(mustHave, cleaned)
 	}
-	return exclusions
+	return mustHave, exclusions
 }
 
 var candidateAgePattern = regexp.MustCompile(`(\d{1,2})\s*岁`)

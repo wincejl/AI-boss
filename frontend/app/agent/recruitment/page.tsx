@@ -1204,6 +1204,32 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                     专业要求：{recommendedFilterValues.major ? majorOptionLabel(recommendedFilterValues.major) : "不限"}
                   </Button>
                 </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="requirement-must-have">重点要求</Label>
+                    <Textarea
+                      id="requirement-must-have"
+                      className="min-h-24"
+                      value={requirementForm.must_have}
+                      onChange={(event) => setRequirementForm((prev) => ({ ...prev, must_have: event.target.value }))}
+                      placeholder="如：3年以上采购经验、熟悉供应链流程、本科优先、能接受深圳通勤。未提及会标记待确认，不直接淘汰。"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      明确排除请单独写“排除：应届生”或“不要：频繁跳槽”，否则按待确认处理。
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="requirement-nice-have">加分项</Label>
+                    <Textarea
+                      id="requirement-nice-have"
+                      className="min-h-24"
+                      value={requirementForm.nice_have}
+                      onChange={(event) => setRequirementForm((prev) => ({ ...prev, nice_have: event.target.value }))}
+                      placeholder="如：采购师证书、PMP、SAP/ERP经验、英语沟通、制造业项目经验、带团队经验。"
+                    />
+                    <p className="text-xs text-muted-foreground">命中会加分；没提到不扣分，适合证书、工具、行业背景这类优势条件。</p>
+                  </div>
+                </div>
                 <div className="grid gap-2 text-sm sm:grid-cols-2">
                   <label className="flex items-center gap-2 rounded-md border bg-background px-3 py-2">
                     <Checkbox

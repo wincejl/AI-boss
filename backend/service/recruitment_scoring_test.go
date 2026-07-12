@@ -35,6 +35,70 @@ func TestScoreRecruitmentCandidateStrongMatch(t *testing.T) {
 	}
 }
 
+func TestScoreRecruitmentCandidateMustHaveMissingOnlyNeedsConfirm(t *testing.T) {
+	req := &models.RecruitmentRequirement{
+		Role:          "采购经理",
+		SearchKeyword: "采购经理",
+		MustHave:      "SAP经验",
+	}
+	candidate := &models.RecruitmentCandidate{
+		CurrentRole: "采购经理",
+		Profile:     "5年采购经验，熟悉供应商管理和成本控制",
+	}
+
+	result := scoreRecruitmentCandidate(req, candidate)
+	if result.Score <= 40 {
+		t.Fatalf("must-have missing should not cap score as exclusion, got %d (%s)", result.Score, result.Reason)
+	}
+	if !strings.Contains(result.RiskFlags, "重点要求待确认：SAP经验") {
+		t.Fatalf("expected must-have confirmation risk, got %q", result.RiskFlags)
+	}
+	if strings.Contains(result.RiskFlags, "命中排除项") {
+		t.Fatalf("must-have should not become exclusion risk, got %q", result.RiskFlags)
+	}
+}
+
+func TestScoreRecruitmentCandidateMustHaveAndNiceHaveAddScore(t *testing.T) {
+	req := &models.RecruitmentRequirement{
+		MustHave: "供应链流程",
+		NiceHave: "采购师证书",
+	}
+	candidate := &models.RecruitmentCandidate{
+		Profile: "熟悉供应链流程，持有采购师证书",
+	}
+
+	result := scoreRecruitmentCandidate(req, candidate)
+	if result.Score < 77 {
+		t.Fatalf("expected must-have and nice-have to add score, got %d (%s)", result.Score, result.Reason)
+	}
+	if !strings.Contains(result.Reason, "重点要求匹配：供应链流程") {
+		t.Fatalf("expected must-have match reason, got %q", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "加分项命中：采购师证书") {
+		t.Fatalf("expected nice-have match reason, got %q", result.Reason)
+	}
+}
+
+func TestScoreRecruitmentCandidateExplicitExclusionStillCaps(t *testing.T) {
+	req := &models.RecruitmentRequirement{
+		Role:          "采购经理",
+		SearchKeyword: "采购经理",
+		MustHave:      "排除：应届生",
+	}
+	candidate := &models.RecruitmentCandidate{
+		CurrentRole: "采购经理",
+		Profile:     "应届生，有采购实习经验",
+	}
+
+	result := scoreRecruitmentCandidate(req, candidate)
+	if result.Score > 40 {
+		t.Fatalf("explicit exclusion should cap score, got %d (%s)", result.Score, result.Reason)
+	}
+	if !strings.Contains(result.RiskFlags, "命中排除项：应届生") {
+		t.Fatalf("expected explicit exclusion risk, got %q", result.RiskFlags)
+	}
+}
+
 func TestScoreRecruitmentCandidateLocationMismatch(t *testing.T) {
 	req := &models.RecruitmentRequirement{
 		Role:           "水电工",
