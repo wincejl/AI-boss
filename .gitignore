@@ -17,6 +17,7 @@ vendor/
 
 # IDE 临时文件
 *.out
+*.obj
 
 # ---- Node / Next.js ----
 # 依赖包

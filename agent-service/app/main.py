@@ -6,8 +6,9 @@ from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
 from .boss_browser import BossSearchPayload, delete_chat, read_candidates, read_chats, search_candidates, send_chat_message, snapshot
+from .boss_visual import capture_boss_window, draft_from_ocr_text, ocr_region, probe_region, probe_visual_capabilities, scan_and_draft_boss_chats, scan_boss_chats, wgc_status
 from .recruitment_agent import run_recruitment_agent
-from .schemas import BossBrowserCandidatesRequest, BossBrowserChatsRequest, BossBrowserDeleteChatRequest, BossBrowserSearchRequest, BossBrowserSendMessageRequest, RecruitmentAgentRequest
+from .schemas import BossBrowserCandidatesRequest, BossBrowserChatsRequest, BossBrowserDeleteChatRequest, BossBrowserSearchRequest, BossBrowserSendMessageRequest, BossDesktopDraftFromOCRRequest, BossDesktopScanDraftRequest, BossDesktopScanRequest, BossVisualOCRRegionRequest, BossVisualRegionProbeRequest, RecruitmentAgentRequest
 
 load_dotenv()
 
@@ -46,6 +47,58 @@ def draft(payload: RecruitmentAgentRequest) -> dict[str, str | bool]:
 @app.get("/v1/boss/snapshot")
 def boss_snapshot():
     return snapshot()
+
+
+@app.get("/v1/boss/visual/probe")
+def boss_visual_probe():
+    return probe_visual_capabilities()
+
+
+@app.post("/v1/boss/visual/region-probe")
+def boss_visual_region_probe(payload: BossVisualRegionProbeRequest):
+    return probe_region(payload.x, payload.y, payload.width, payload.height)
+
+
+@app.post("/v1/boss/visual/ocr-region")
+def boss_visual_ocr_region(payload: BossVisualOCRRegionRequest):
+    return ocr_region(payload.x, payload.y, payload.width, payload.height)
+
+
+@app.get("/v1/boss/desktop/wgc-status")
+def boss_desktop_wgc_status():
+    return wgc_status()
+
+
+@app.post("/v1/boss/desktop/capture")
+def boss_desktop_capture():
+    try:
+        return capture_boss_window()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/desktop/scan")
+def boss_desktop_scan(payload: BossDesktopScanRequest):
+    try:
+        return scan_boss_chats(payload.count, payload.ocr)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/desktop/draft-from-ocr")
+def boss_desktop_draft_from_ocr(payload: BossDesktopDraftFromOCRRequest):
+    try:
+        return draft_from_ocr_text(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/boss/desktop/scan-draft")
+def boss_desktop_scan_draft(payload: BossDesktopScanDraftRequest):
+    try:
+        return scan_and_draft_boss_chats(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/v1/boss/search")

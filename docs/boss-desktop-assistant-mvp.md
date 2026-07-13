@@ -52,6 +52,88 @@ The project may:
 
 ## Recommended MVP Features
 
+### Desktop UIA Not Used
+
+Current Windows validation result:
+
+- `boss-zhipin.exe` processes can be detected.
+- If all BOSS processes report `MainWindowHandle=0` and no UIA window is visible, the desktop client is treated as running but not automatable.
+- The UI Automation probe path has been removed from the codebase. In this state the project should continue using the browser automation path, manual paste workflow, or the supervised visual fallback below.
+
+### Windows Graphics Capture Path
+
+Current Windows validation result:
+
+- BOSS desktop client can be detected as a `Chrome_WidgetWin_0` window titled `BOSS直聘`.
+- `tools/wgc-capture/wgc-capture.exe --auto-boss boss-auto.png` captures the BOSS desktop client with Windows Graphics Capture.
+- `tools/wgc-capture/wgc-capture.exe --scan boss-scan 3` can click the visible chat-list rows and save one screenshot per selected conversation.
+- The helper uses Windows Graphics Capture for frames and Win32 mouse clicks only for visible chat-list navigation. It does not type, paste, send messages, read local BOSS data, hook processes, sniff traffic, or call private BOSS APIs.
+
+Service endpoints:
+
+- `GET /v1/boss/desktop/wgc-status`
+- `POST /v1/boss/desktop/capture`
+- `POST /v1/boss/desktop/scan` with `{ "count": 3 }`
+
+Safety switches:
+
+```env
+BOSS_VISUAL_SCREENSHOT_PROBE=true
+BOSS_DESKTOP_CLICK_PROBE=true
+```
+
+`BOSS_DESKTOP_CLICK_PROBE` must stay `false` by default. Enable it only during a visible, supervised desktop test.
+
+Recommended desktop MVP:
+
+1. User opens BOSS desktop client and logs in manually.
+2. Helper detects the BOSS window and captures it with WGC.
+3. Helper clicks only visible chat-list rows to inspect conversations.
+4. OCR extracts visible candidate/chat text from screenshots.
+5. AI generates match analysis and reply drafts.
+6. Human reviews the draft before any copy/paste/send action.
+
+### Visual Automation Fallback
+
+If UI Automation cannot see the desktop client, the next fallback is visual automation. This is less stable and has higher privacy risk, so it must start as capability probing only:
+
+- `agent-service/app/boss_visual.py` checks whether PyAutoGUI, Pillow, MSS, OpenCV, NumPy, pytesseract, and the Tesseract engine are available.
+- By default it does not take screenshots and does not run OCR.
+- Any screenshot probe must be explicitly enabled with `BOSS_VISUAL_SCREENSHOT_PROBE=true`.
+- The bounded probe `/v1/boss/visual/region-probe` returns only region metadata and average color; it does not store or return screenshots.
+- On Windows, bounded screenshots may fail from a background service with `BitBlt: access denied`; run visual probes only in the user's interactive desktop session with explicit approval.
+- OCR must be separately enabled with `BOSS_VISUAL_OCR_PROBE=true`.
+- Cloud OCR is available only as an explicit, supervised test path. PaddleOCR cloud is the preferred test provider for now, and requires all of these switches:
+  - `BOSS_VISUAL_SCREENSHOT_PROBE=true`
+  - `BOSS_VISUAL_OCR_PROBE=true`
+  - `OCR_PROVIDER=paddle_cloud`
+  - `OCR_CLOUD_ENABLED=true`
+  - `OCR_PADDLE_TOKEN`
+- The OCR endpoint accepts only a bounded rectangle, never a full-screen upload by default, and it does not save or return the captured image.
+- Cloud OCR can expose names, messages, and contact details to the provider. Use it only for short manual tests; prefer a future local PaddleOCR provider for routine use.
+- Prefer template matching for fixed buttons/regions before OCR; OCR should be used only on a small user-confirmed rectangle.
+- Never run visual click/send actions in the background. Require a human-visible preview and confirmation first.
+
+Recommended dependency levels:
+
+- Basic screen probe: `pyautogui`, `pillow`, `mss`.
+- Template matching: add `opencv-python-headless`, `numpy`.
+- Local OCR: add `pytesseract` plus a separately installed Tesseract OCR engine, or add a future PaddleOCR provider for better Chinese recognition.
+- Cloud OCR test: configure the PaddleOCR cloud provider above; keep `OCR_SAVE_IMAGES=false`.
+
+Direct BOSS message sending is disabled by default. Enable it only for a controlled manual test with:
+
+```env
+BOSS_MESSAGE_SEND_ENABLED=true
+```
+
+Background BOSS sync is also disabled by default and should not run faster than the guarded interval:
+
+```env
+BOSS_AUTO_SYNC_ENABLED=false
+BOSS_AUTO_SYNC_INTERVAL_SECONDS=60
+```
+
 ### Phase 1: Manual Paste
 
 - Add "Paste BOSS Profile" panel in Recruitment Agent.

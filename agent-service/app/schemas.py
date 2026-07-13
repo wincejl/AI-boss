@@ -95,3 +95,37 @@ class BossBrowserSendMessageRequest(BaseModel):
 class BossBrowserDeleteChatRequest(BaseModel):
     name: str
     role: str = ""
+
+
+class BossVisualRegionProbeRequest(BaseModel):
+    x: int = Field(default=0, ge=0)
+    y: int = Field(default=0, ge=0)
+    width: int = Field(default=1, ge=1, le=1200)
+    height: int = Field(default=1, ge=1, le=900)
+
+
+class BossVisualOCRRegionRequest(BaseModel):
+    x: int = Field(default=0, ge=0)
+    y: int = Field(default=0, ge=0)
+    width: int = Field(default=1, ge=1, le=1200)
+    height: int = Field(default=1, ge=1, le=900)
+
+
+class BossDesktopScanRequest(BaseModel):
+    count: int = Field(default=3, ge=1, le=10)
+    ocr: bool = False
+
+
+class BossDesktopDraftFromOCRRequest(BaseModel):
+    thread_id: str = ""
+    knowledge_context: str = ""
+    requirement: RecruitmentRequirement
+    chat_text: str = Field(default="", min_length=1)
+    candidate_name: str = ""
+    current_role: str = ""
+
+
+class BossDesktopScanDraftRequest(BaseModel):
+    count: int = Field(default=1, ge=1, le=5)
+    knowledge_context: str = ""
+    requirement: RecruitmentRequirement
