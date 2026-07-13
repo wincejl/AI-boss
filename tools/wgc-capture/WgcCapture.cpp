@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <iostream>
 #include <mutex>
+#include <string_view>
 #include <string>
 #include <thread>
 #include <utility>
@@ -43,6 +44,22 @@ namespace
         bool visible{};
         int area{};
     };
+
+    std::string Utf8(std::wstring_view value)
+    {
+        if (value.empty())
+        {
+            return "";
+        }
+        int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+        if (size <= 0)
+        {
+            return "";
+        }
+        std::string out(static_cast<size_t>(size), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), out.data(), size, nullptr, nullptr);
+        return out;
+    }
 
     HWND CreateOwnerWindow()
     {
@@ -250,7 +267,7 @@ namespace
 
         if (candidates.empty())
         {
-            std::wcerr << L"No visible Chrome_WidgetWin_0/1 candidates found.\n";
+            std::cerr << "No visible Chrome_WidgetWin_0/1 candidates found.\n";
             return nullptr;
         }
 
@@ -267,21 +284,21 @@ namespace
             return a.area > b.area;
         });
 
-        std::wcout << L"Chrome widget candidates:\n";
+        std::cout << "Chrome widget candidates:\n";
         for (auto const& candidate : candidates)
         {
-            std::wcout << L"  hwnd=0x" << std::hex << reinterpret_cast<uintptr_t>(candidate.hwnd) << std::dec
-                << L" class=" << candidate.className
-                << L" title=\"" << candidate.title << L"\""
-                << L" rect=(" << candidate.rect.left << L"," << candidate.rect.top << L"," << candidate.rect.right << L"," << candidate.rect.bottom << L")"
-                << (candidate.likelyBoss ? L" likelyBoss" : L"")
-                << (candidate.visible ? L" visible" : L" hidden")
-                << L"\n";
+            std::cout << "  hwnd=0x" << std::hex << reinterpret_cast<uintptr_t>(candidate.hwnd) << std::dec
+                << " class=" << Utf8(candidate.className)
+                << " title=\"" << Utf8(candidate.title) << "\""
+                << " rect=(" << candidate.rect.left << "," << candidate.rect.top << "," << candidate.rect.right << "," << candidate.rect.bottom << ")"
+                << (candidate.likelyBoss ? " likelyBoss" : "")
+                << (candidate.visible ? " visible" : " hidden")
+                << "\n";
         }
 
         if (!candidates.front().likelyBoss)
         {
-            std::wcerr << L"No visible Chrome_WidgetWin candidate matched BOSS/直聘/zhipin.\n";
+            std::cerr << "No visible Chrome_WidgetWin candidate matched BOSS/zhipin.\n";
             return nullptr;
         }
 
@@ -512,7 +529,7 @@ int wmain(int argc, wchar_t** argv)
             bossWindow = FindBossChromeWidgetWindow();
             if (!bossWindow)
             {
-                std::wcerr << L"Could not find a visible Chrome_WidgetWin BOSS window.\n";
+                std::cerr << "Could not find a visible Chrome_WidgetWin BOSS window.\n";
                 return 6;
             }
 
@@ -528,7 +545,7 @@ int wmain(int argc, wchar_t** argv)
             auto initializeWithWindow = picker.as<IInitializeWithWindow>();
             check_hresult(initializeWithWindow->Initialize(owner));
 
-            std::wcout << L"Select the BOSS window in the picker...\n";
+            std::cout << "Select the BOSS window in the picker...\n";
             HANDLE pickerEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             if (!pickerEvent)
             {
@@ -547,7 +564,7 @@ int wmain(int argc, wchar_t** argv)
 
             if (!WaitWithMessagePump(pickerEvent, 120000))
             {
-                std::wcerr << L"Timed out waiting for picker selection.\n";
+                std::cerr << "Timed out waiting for picker selection.\n";
                 CloseHandle(pickerEvent);
                 DestroyWindow(owner);
                 return 5;
@@ -555,7 +572,7 @@ int wmain(int argc, wchar_t** argv)
             CloseHandle(pickerEvent);
             if (!item)
             {
-                std::wcerr << L"No capture item selected.\n";
+                std::cerr << "No capture item selected.\n";
                 DestroyWindow(owner);
                 return 3;
             }
@@ -564,8 +581,8 @@ int wmain(int argc, wchar_t** argv)
         auto selectedSize = item.Size();
         if (selectedSize.Width < 600 || selectedSize.Height < 400)
         {
-            std::wcerr << L"Selected item is too small (" << selectedSize.Width << L"x" << selectedSize.Height
-                << L"). Select the main BOSS chat window, not a toolbar, popup, or title area.\n";
+            std::cerr << "Selected item is too small (" << selectedSize.Width << "x" << selectedSize.Height
+                << "). Select the main BOSS chat window, not a toolbar, popup, or title area.\n";
             if (owner)
             {
                 DestroyWindow(owner);
@@ -580,7 +597,7 @@ int wmain(int argc, wchar_t** argv)
         if (!scanMode)
         {
             capture.SaveLatest(output);
-            std::wcout << L"Saved: " << output << L"\n";
+            std::cout << "Saved: " << Utf8(output) << "\n";
         }
         else
         {
@@ -602,12 +619,12 @@ int wmain(int argc, wchar_t** argv)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1200));
                 if (!capture.WaitForNewFrame(beforeClickFrame, 5000))
                 {
-                    std::wcerr << L"Warning: no fresh frame observed after click; saving the latest available frame.\n";
+                    std::cerr << "Warning: no fresh frame observed after click; saving the latest available frame.\n";
                 }
 
                 std::wstring path = scanDir + L"\\boss_" + std::to_wstring(i + 1) + L".png";
                 capture.SaveLatest(path);
-                std::wcout << L"Saved: " << path << L"\n";
+                std::cout << "Saved: " << Utf8(path) << "\n";
             }
         }
 
