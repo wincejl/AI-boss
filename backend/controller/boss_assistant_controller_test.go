@@ -109,3 +109,23 @@ func TestDesktopOCRLatestMessageFiltersButtons(t *testing.T) {
 		t.Fatalf("latest message should keep useful lines: %q", got)
 	}
 }
+
+func TestDesktopOCRCleanTextFiltersLegalAndImageNoise(t *testing.T) {
+	text := "张三\nBOSS直聘平台提交、发布、展示的简历中的个人信息\n<div><img src=\"x.jpg\" /></div>\n候选人说下周到岗\n有效缩短\n招聘时间"
+	got := desktopOCRCleanText(text)
+	if strings.Contains(got, "BOSS直聘平台提交") || strings.Contains(got, "<img") || strings.Contains(got, "有效缩短") {
+		t.Fatalf("clean text should remove legal, image, and page chrome noise: %q", got)
+	}
+	if !strings.Contains(got, "张三") || !strings.Contains(got, "候选人说下周到岗") {
+		t.Fatalf("clean text should keep candidate content: %q", got)
+	}
+}
+
+func TestDesktopOCRConversationNameRejectsNoisyText(t *testing.T) {
+	if got := desktopOCRConversationName(2, "的人都平安幸福\n招聘时间"); got != "BOSS Desktop OCR #2" {
+		t.Fatalf("expected noisy text to use fallback name, got %q", got)
+	}
+	if got := desktopOCRConversationName(1, "李四\n候选人说下周到岗"); got != "李四" {
+		t.Fatalf("expected short candidate-like name, got %q", got)
+	}
+}

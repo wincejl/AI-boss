@@ -240,16 +240,20 @@ def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
             "safety": BOSS_DESKTOP_SAFETY,
             "message": "desktop WGC scan is disabled; set BOSS_VISUAL_SCREENSHOT_PROBE=true for a supervised test",
         }
-    if not env_enabled("BOSS_DESKTOP_CLICK_PROBE"):
-        return {
-            "ok": False,
-            "mode": "boss_desktop_wgc_scan",
-            "safety": BOSS_DESKTOP_SAFETY,
-            "message": "desktop click scan is disabled; set BOSS_DESKTOP_CLICK_PROBE=true for a supervised test",
-        }
     safe_count = max(1, min(10, int(count)))
     output_dir = desktop_capture_dir("boss-desktop-scans") / f"scan-{timestamp_id()}-{uuid.uuid4().hex[:8]}"
-    result = run_wgc(["--scan", str(output_dir), str(safe_count)], timeout=30 + safe_count * 15)
+    if safe_count == 1:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = run_wgc(["--auto-boss", str(output_dir / "boss_1.png")], timeout=60)
+    else:
+        if not env_enabled("BOSS_DESKTOP_CLICK_PROBE"):
+            return {
+                "ok": False,
+                "mode": "boss_desktop_wgc_scan",
+                "safety": BOSS_DESKTOP_SAFETY,
+                "message": "desktop click scan is disabled; set BOSS_DESKTOP_CLICK_PROBE=true for a supervised batch scan",
+            }
+        result = run_wgc(["--scan", str(output_dir), str(safe_count)], timeout=30 + safe_count * 15)
     images = sorted(output_dir.glob("*.png")) if output_dir.exists() else []
     extra: dict[str, Any] = {"requested_count": safe_count, "ocr_requested": run_ocr}
     if run_ocr:

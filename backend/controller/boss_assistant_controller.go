@@ -245,7 +245,7 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 	seen := map[string]struct{}{}
 	skipped := 0
 	for index, ocr := range result.OCRResults {
-		text := strings.TrimSpace(ocr.Text)
+		text := desktopOCRCleanText(ocr.Text)
 		key := desktopOCRProfileKey(text)
 		if !ocr.OK || key == "" {
 			skipped++
@@ -588,7 +588,7 @@ func desktopOCRConversationName(index int, profile string) string {
 		index = 1
 	}
 	for _, line := range desktopOCRUsefulLines(profile, 6) {
-		if len([]rune(line)) <= 32 {
+		if desktopOCRLooksLikeCandidateName(line) {
 			return line
 		}
 	}
@@ -627,16 +627,21 @@ func desktopOCRLatestMessage(profile string) string {
 	return out
 }
 
+func desktopOCRCleanText(profile string) string {
+	useful := desktopOCRUsefulLines(profile, 24)
+	return strings.TrimSpace(strings.Join(useful, "\n"))
+}
+
 func desktopOCRUsefulLines(profile string, limit int) []string {
 	lines := strings.Split(profile, "\n")
 	useful := []string{}
 	ignored := map[string]bool{
 		"同意": true, "拒绝": true, "求简历": true, "换电话": true, "换微信": true, "我知道了": true, "已读": true,
-		"沟通": true, "职位": true, "简历": true, "常用语": true, "表情": true, "发送": true,
+		"沟通": true, "职位": true, "简历": true, "常用语": true, "表情": true, "发送": true, "更多": true,
 	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || ignored[line] || strings.HasPrefix(line, "<div") || strings.HasPrefix(line, "http") {
+		if line == "" || ignored[line] || desktopOCRIsNoiseLine(line) {
 			continue
 		}
 		useful = append(useful, line)
@@ -645,6 +650,55 @@ func desktopOCRUsefulLines(profile string, limit int) []string {
 		useful = useful[len(useful)-limit:]
 	}
 	return useful
+}
+
+func desktopOCRIsNoiseLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if lower == "" || strings.HasPrefix(lower, "http") || strings.Contains(lower, "<div") || strings.Contains(lower, "<img") {
+		return true
+	}
+	noiseSubstrings := []string{
+		"BOSS直聘平台提交",
+		"发布、展示的简历",
+		"任何用户原则上仅可出于自身招聘",
+		"不得将牛人在BOSS直聘平台",
+		"隐私政策",
+		"用户协议",
+		"举报",
+		"拉黑",
+		"备注",
+		"未选中联系人",
+		"列表只展示近30天",
+		"帮我问意向",
+		"有效缩短",
+		"招聘时间",
+	}
+	for _, item := range noiseSubstrings {
+		if strings.Contains(line, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopOCRLooksLikeCandidateName(line string) bool {
+	line = strings.TrimSpace(line)
+	runes := []rune(line)
+	if len(runes) < 2 || len(runes) > 12 {
+		return false
+	}
+	if strings.ContainsAny(line, "0123456789:：/\\|,，.。()（）[]【】<>《》") {
+		return false
+	}
+	if desktopOCRIsNoiseLine(line) {
+		return false
+	}
+	for _, bad := range []string{"BOSS", "直聘", "平台", "招聘", "岗位", "沟通", "简历", "时间", "幸福"} {
+		if strings.Contains(line, bad) {
+			return false
+		}
+	}
+	return true
 }
 
 func defaultString(value string, fallback string) string {

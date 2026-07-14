@@ -91,7 +91,7 @@ export function ConversationSidebar({
             disabled={importingBossDesktopOCR}
           >
             <ScanText className={`w-4 h-4 ${importingBossDesktopOCR ? "animate-pulse" : ""}`} />
-            导入BOSS桌面对话
+            导入当前BOSS对话
           </Button>
         )}
         <ConversationSearch value={searchQuery} onChange={onSearchChange} />

@@ -523,6 +523,7 @@ int wmain(int argc, wchar_t** argv)
         wgc::GraphicsCaptureItem item{ nullptr };
         HWND owner{};
         HWND bossWindow{};
+        HWND previousForeground = GetForegroundWindow();
 
         if (scanMode || autoBossMode)
         {
@@ -533,9 +534,24 @@ int wmain(int argc, wchar_t** argv)
                 return 6;
             }
 
-            ShowWindow(bossWindow, SW_RESTORE);
-            SetForegroundWindow(bossWindow);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (scanMode)
+            {
+                ShowWindow(bossWindow, SW_RESTORE);
+                SetForegroundWindow(bossWindow);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            else
+            {
+                if (IsIconic(bossWindow))
+                {
+                    ShowWindow(bossWindow, SW_RESTORE);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                else
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                }
+            }
             item = CreateItemForWindow(bossWindow);
         }
         else
@@ -625,6 +641,11 @@ int wmain(int argc, wchar_t** argv)
                 std::wstring path = scanDir + L"\\boss_" + std::to_wstring(i + 1) + L".png";
                 capture.SaveLatest(path);
                 std::cout << "Saved: " << Utf8(path) << "\n";
+            }
+
+            if (previousForeground && previousForeground != bossWindow && IsWindow(previousForeground))
+            {
+                SetForegroundWindow(previousForeground);
             }
         }
 

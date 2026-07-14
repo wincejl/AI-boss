@@ -322,7 +322,7 @@ export function DashboardShell() {
   const handleImportBossDesktopOCRChats = useCallback(async () => {
     setImportingBossDesktopOCR(true);
     try {
-      const result = await importBossDesktopOCRChats(5, true);
+      const result = await importBossDesktopOCRChats(1, true);
       await refreshConversations();
       if (!selectedConversationId && result.conversations[0]?.id) {
         selectConversation(result.conversations[0].id);
