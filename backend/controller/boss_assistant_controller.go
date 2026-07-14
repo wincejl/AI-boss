@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,10 +245,19 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 	items := make([]service.ImportBossChatInput, 0, len(result.OCRResults))
 	seen := map[string]struct{}{}
 	skipped := 0
+	parseWarnings := []string{}
+	parsedChats := []desktopOCRParsedChat{}
 	for index, ocr := range result.OCRResults {
-		text := desktopOCRCleanText(ocr.Text)
-		key := desktopOCRProfileKey(text)
-		if !ocr.OK || key == "" {
+		if !ocr.OK {
+			parseWarnings = append(parseWarnings, "OCR result was not successful")
+			skipped++
+			continue
+		}
+		parsed := desktopOCRParseChat(index+1, ocr.Text)
+		parsedChats = append(parsedChats, parsed)
+		parseWarnings = append(parseWarnings, parsed.Warnings...)
+		key := desktopOCRProfileKey(parsed.Profile)
+		if key == "" || !parsed.Importable {
 			skipped++
 			continue
 		}
@@ -256,16 +266,15 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 			continue
 		}
 		seen[key] = struct{}{}
-		name := desktopOCRConversationName(index+1, text)
-		lastMessage := desktopOCRLatestMessage(text)
 		items = append(items, service.ImportBossChatInput{
-			Key:         desktopOCRChatKey(name, text, index+1),
-			Name:        name,
-			Role:        "BOSS Desktop OCR",
-			LastMessage: lastMessage,
-			LastSender:  "visitor",
+			Key:         desktopOCRChatKey(parsed.Name, parsed.Profile, index+1),
+			Name:        parsed.Name,
+			Role:        defaultString(parsed.Role, "BOSS Desktop OCR"),
+			LastMessage: parsed.LastMessage,
+			LastSender:  parsed.LastSender,
 			TimeText:    "Desktop OCR",
-			Profile:     text,
+			Profile:     parsed.Profile,
+			Messages:    parsed.Messages,
 		})
 	}
 
@@ -288,6 +297,8 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 		"scan":            result,
 		"deleted_images":  result.DeletedImages,
 		"image_retention": result.ImageRetention,
+		"parsed":          parsedChats,
+		"warnings":        parseWarnings,
 		"requires_review": true,
 		"message":         "BOSS desktop OCR results imported into dashboard conversations; screenshots were deleted and no message was sent",
 	})
@@ -583,12 +594,111 @@ func bossCandidateKey(name string, role string, location string, profile string)
 	return strings.Join([]string{name, role, location, profile}, "|")
 }
 
+type desktopOCRParsedChat struct {
+	Importable  bool                             `json:"importable"`
+	Name        string                           `json:"name"`
+	Role        string                           `json:"role"`
+	Profile     string                           `json:"profile"`
+	LastMessage string                           `json:"last_message"`
+	LastSender  string                           `json:"last_sender"`
+	Messages    []service.BossChatHistoryMessage `json:"messages"`
+	Confidence  string                           `json:"confidence"`
+	Warnings    []string                         `json:"warnings"`
+}
+
+var desktopOCRTimeLinePattern = regexp.MustCompile(`^(\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2})(\s+\d{1,2}:\d{2})?$`)
+
+func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
+	lines := desktopOCRUsefulLines(raw, 0)
+	parsed := desktopOCRParsedChat{
+		Name:       desktopOCRConversationName(index, strings.Join(lines, "\n")),
+		Role:       "BOSS Desktop OCR",
+		LastSender: "visitor",
+		Confidence: "low",
+		Warnings:   []string{},
+	}
+	if len(lines) == 0 {
+		parsed.Warnings = append(parsed.Warnings, "OCR returned no useful chat text after filtering")
+		return parsed
+	}
+
+	profileLines := []string{}
+	for pos, line := range lines {
+		if parsed.Name == "" || strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
+			if pos < 12 && desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeRoleLine(line) && !desktopOCRLooksLikeMessageLine(line) {
+				parsed.Name = line
+				continue
+			}
+		}
+		if parsed.Role == "BOSS Desktop OCR" && desktopOCRLooksLikeRoleLine(line) {
+			parsed.Role = line
+			profileLines = append(profileLines, line)
+			continue
+		}
+		if desktopOCRLooksLikeMessageLine(line) {
+			sender := desktopOCRGuessSender(line)
+			parsed.Messages = append(parsed.Messages, service.BossChatHistoryMessage{
+				Sender:  sender,
+				Content: desktopOCRMarkUncertainMessage(line, sender),
+			})
+			continue
+		}
+		if len(profileLines) < 10 {
+			profileLines = append(profileLines, line)
+		}
+	}
+
+	if parsed.Name == "" {
+		parsed.Name = "BOSS Desktop OCR #" + strconv.Itoa(index)
+	}
+	if len(parsed.Messages) > 0 {
+		last := parsed.Messages[len(parsed.Messages)-1]
+		parsed.LastMessage = last.Content
+		parsed.LastSender = last.Sender
+		parsed.Confidence = "medium"
+		if len(parsed.Messages) >= 2 && !strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
+			parsed.Confidence = "high"
+		}
+	} else {
+		parsed.LastMessage = desktopOCRLatestMessage(strings.Join(lines, "\n"))
+		if parsed.LastMessage != "" {
+			parsed.LastMessage = "[OCR review] " + parsed.LastMessage
+			parsed.Messages = []service.BossChatHistoryMessage{{Sender: "candidate", Content: parsed.LastMessage}}
+			parsed.Warnings = append(parsed.Warnings, "OCR text did not contain clear chat bubbles; imported as one review message")
+		}
+	}
+
+	profile := strings.TrimSpace(strings.Join(profileLines, "\n"))
+	if profile == "" {
+		profile = desktopOCRCleanText(strings.Join(lines, "\n"))
+	}
+	parsed.Profile = profile
+	parsed.Importable = desktopOCRParsedChatImportable(parsed)
+	if !parsed.Importable {
+		parsed.Warnings = append(parsed.Warnings, "OCR result was too noisy or too sparse to import")
+	}
+	return parsed
+}
+
+func desktopOCRParsedChatImportable(parsed desktopOCRParsedChat) bool {
+	if strings.TrimSpace(parsed.Profile) == "" {
+		return false
+	}
+	if len(parsed.Messages) > 0 {
+		return true
+	}
+	if !strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
+		return true
+	}
+	return desktopOCRLooksLikeRoleLine(parsed.Role)
+}
+
 func desktopOCRConversationName(index int, profile string) string {
 	if index <= 0 {
 		index = 1
 	}
 	for _, line := range desktopOCRUsefulLines(profile, 6) {
-		if desktopOCRLooksLikeCandidateName(line) {
+		if desktopOCRLooksLikeStrictCandidateName(line) {
 			return line
 		}
 	}
@@ -632,6 +742,120 @@ func desktopOCRCleanText(profile string) string {
 	return strings.TrimSpace(strings.Join(useful, "\n"))
 }
 
+func desktopOCRLooksLikeRoleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsTimeOrStatusLine(line) {
+		return false
+	}
+	if desktopOCRContainsAny(line, []string{
+		"\u5de5\u7a0b\u5e08", "\u5f00\u53d1", "\u8fd0\u8425", "\u4ea7\u54c1", "\u8bbe\u8ba1", "\u6d4b\u8bd5",
+		"\u524d\u7aef", "\u540e\u7aef", "Java", "Python", "Go", "\u5b9e\u4e60", "\u5c97\u4f4d", "\u804c\u4f4d", "\u62db\u8058",
+	}) {
+		return true
+	}
+	return false
+}
+
+func desktopOCRLooksLikeMessageLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsTimeOrStatusLine(line) || desktopOCRIsControlLine(line) {
+		return false
+	}
+	runes := []rune(line)
+	if len(runes) < 3 || len(runes) > 260 {
+		return false
+	}
+	if desktopOCRContainsAny(line, []string{
+		"\u4f60", "\u60a8", "\u6211", "\u54b1", "\u53ef\u4ee5", "\u65b9\u4fbf", "\u5417", "\u5462", "\u554a", "\u5594",
+		"\u7b80\u5386", "\u9762\u8bd5", "\u5fae\u4fe1", "\u7535\u8bdd", "\u9879\u76ee", "\u7ecf\u9a8c", "\u85aa\u8d44",
+		"\u5230\u5c97", "\u804a", "\u6c9f\u901a", "\u4e86\u89e3", "\u6295\u9012", "\u53d1\u6211", "\u6536\u5230",
+	}) {
+		return true
+	}
+	return len(runes) >= 8 && !desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeRoleLine(line)
+}
+
+func desktopOCRGuessSender(line string) string {
+	line = strings.TrimSpace(line)
+	if desktopOCRContainsAny(line, []string{
+		"\u6211\u8fd9\u8fb9", "\u6211\u4eec\u8fd9\u8fb9", "\u770b\u4e86\u4f60\u7684\u7b80\u5386", "\u770b\u4e86\u60a8\u7684\u7b80\u5386",
+		"\u53d1\u60a8", "\u53d1\u4f60", "\u7ed9\u60a8", "\u7ed9\u4f60", "\u6211\u4eec\u5728\u62db", "\u8fd9\u4e2a\u5c97\u4f4d",
+	}) {
+		return "agent"
+	}
+	return "candidate"
+}
+
+func desktopOCRMarkUncertainMessage(line string, sender string) string {
+	line = strings.TrimSpace(line)
+	if sender == "agent" {
+		return line
+	}
+	return line
+}
+
+func desktopOCRIsTimeOrStatusLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true
+	}
+	if desktopOCRTimeLinePattern.MatchString(line) {
+		return true
+	}
+	for _, marker := range []string{
+		"\u4eca\u5929", "\u6628\u5929", "\u524d\u5929", "\u5df2\u8bfb", "\u9001\u8fbe", "\u672a\u8bfb",
+	} {
+		if line == marker {
+			return true
+		}
+		if strings.HasPrefix(line, marker+" ") && len([]rune(line)) <= 10 {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopOCRIsControlLine(line string) bool {
+	line = strings.TrimSpace(line)
+	controls := []string{
+		"\u540c\u610f", "\u62d2\u7edd", "\u6c42\u7b80\u5386", "\u6362\u7535\u8bdd", "\u6362\u5fae\u4fe1", "\u6211\u77e5\u9053\u4e86",
+		"\u804c\u4f4d", "\u7b80\u5386", "\u5e38\u7528\u8bed", "\u8868\u60c5", "\u53d1\u9001", "\u66f4\u591a", "\u5907\u6ce8",
+		"\u4e3e\u62a5", "\u62c9\u9ed1",
+	}
+	for _, item := range controls {
+		if line == item {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopOCRIsStrictNoiseLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if lower == "" || strings.HasPrefix(lower, "http") || strings.Contains(lower, "<div") || strings.Contains(lower, "<img") || strings.Contains(lower, "![") {
+		return true
+	}
+	if desktopOCRIsTimeOrStatusLine(line) {
+		return true
+	}
+	return desktopOCRContainsAny(line, []string{
+		"BOSS\u76f4\u8058\u5e73\u53f0\u63d0\u4ea4",
+		"\u53d1\u5e03\u3001\u5c55\u793a\u7684\u7b80\u5386",
+		"\u4e2a\u4eba\u4fe1\u606f",
+		"\u9690\u79c1\u653f\u7b56",
+		"\u7528\u6237\u534f\u8bae",
+		"\u4e3e\u62a5",
+		"\u62c9\u9ed1",
+		"\u5907\u6ce8",
+		"\u672a\u9009\u4e2d\u8054\u7cfb\u4eba",
+		"\u5217\u8868\u53ea\u5c55\u793a\u8fd130\u5929",
+		"\u5e2e\u6211\u95ee\u610f\u5411",
+		"\u6709\u6548\u7f29\u77ed",
+		"\u62db\u8058\u65f6\u95f4",
+		"\u7684\u4eba\u90fd\u5e73\u5b89\u5e78\u798f",
+	})
+}
+
 func desktopOCRUsefulLines(profile string, limit int) []string {
 	lines := strings.Split(profile, "\n")
 	useful := []string{}
@@ -641,7 +865,7 @@ func desktopOCRUsefulLines(profile string, limit int) []string {
 	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || ignored[line] || desktopOCRIsNoiseLine(line) {
+		if line == "" || ignored[line] || desktopOCRIsControlLine(line) || desktopOCRIsStrictNoiseLine(line) || desktopOCRIsNoiseLine(line) {
 			continue
 		}
 		useful = append(useful, line)
@@ -699,6 +923,34 @@ func desktopOCRLooksLikeCandidateName(line string) bool {
 		}
 	}
 	return true
+}
+
+func desktopOCRLooksLikeStrictCandidateName(line string) bool {
+	if !desktopOCRLooksLikeCandidateName(line) {
+		return false
+	}
+	if desktopOCRContainsAny(line, []string{
+		"BOSS", "\u76f4\u8058", "\u5e73\u53f0", "\u62db\u8058", "\u5c97\u4f4d", "\u6c9f\u901a",
+		"\u7b80\u5386", "\u65f6\u95f4", "\u5e78\u798f", "\u5e73\u5b89", "\u5019\u9009\u4eba",
+	}) {
+		return false
+	}
+	chinese := 0
+	for _, r := range []rune(line) {
+		if r >= '\u4e00' && r <= '\u9fff' {
+			chinese++
+		}
+	}
+	return chinese > 0
+}
+
+func desktopOCRContainsAny(value string, needles []string) bool {
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultString(value string, fallback string) string {
