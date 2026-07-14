@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -253,7 +254,7 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 			skipped++
 			continue
 		}
-		parsed := desktopOCRParseChat(index+1, ocr.Text)
+		parsed := desktopOCRParseChat(index+1, ocr.Text, ocr.Boxes)
 		parsedChats = append(parsedChats, parsed)
 		parseWarnings = append(parseWarnings, parsed.Warnings...)
 		key := desktopOCRProfileKey(parsed.Profile)
@@ -597,6 +598,9 @@ func bossCandidateKey(name string, role string, location string, profile string)
 type desktopOCRParsedChat struct {
 	Importable  bool                             `json:"importable"`
 	Name        string                           `json:"name"`
+	Age         string                           `json:"age,omitempty"`
+	Education   string                           `json:"education,omitempty"`
+	Experience  string                           `json:"experience,omitempty"`
 	Role        string                           `json:"role"`
 	Profile     string                           `json:"profile"`
 	LastMessage string                           `json:"last_message"`
@@ -607,9 +611,11 @@ type desktopOCRParsedChat struct {
 }
 
 var desktopOCRTimeLinePattern = regexp.MustCompile(`^(\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2})(\s+\d{1,2}:\d{2})?$`)
+var desktopOCRAgePattern = regexp.MustCompile(`(\d{2})\s*岁`)
+var desktopOCRExperiencePattern = regexp.MustCompile(`(\d{1,2})\s*年\s*(经验|工作经验)`)
 
-func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
-	lines := desktopOCRUsefulLines(raw, 0)
+func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopOCRParsedChat {
+	lines := desktopOCRUsefulLines(desktopOCRTextFromBlocks(raw, boxes), 0)
 	parsed := desktopOCRParsedChat{
 		Name:       desktopOCRConversationName(index, strings.Join(lines, "\n")),
 		Role:       "BOSS Desktop OCR",
@@ -621,6 +627,7 @@ func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
 		parsed.Warnings = append(parsed.Warnings, "OCR returned no useful chat text after filtering")
 		return parsed
 	}
+	desktopOCRExtractCandidateBasics(&parsed, lines)
 
 	profileLines := []string{}
 	for pos, line := range lines {
@@ -686,12 +693,107 @@ func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
 	if profile == "" {
 		profile = desktopOCRCleanText(strings.Join(lines, "\n"))
 	}
+	profile = desktopOCRProfileWithBasics(parsed, profile)
 	parsed.Profile = profile
 	parsed.Importable = desktopOCRParsedChatImportable(parsed)
 	if !parsed.Importable {
 		parsed.Warnings = append(parsed.Warnings, "OCR result was too noisy or too sparse to import")
 	}
 	return parsed
+}
+
+func desktopOCRTextFromBlocks(raw string, boxes []map[string]any) string {
+	lines := []string{}
+	for _, box := range boxes {
+		if !strings.EqualFold(strings.TrimSpace(anyString(box["type"])), "paddle_block") {
+			continue
+		}
+		text := strings.TrimSpace(anyString(box["text"]))
+		if text == "" {
+			continue
+		}
+		lines = append(lines, text)
+	}
+	if len(lines) == 0 {
+		return raw
+	}
+	return strings.Join(lines, "\n")
+}
+
+func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []string) {
+	for index, line := range lines {
+		if index > 12 {
+			break
+		}
+		if parsed.Name == "" || strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
+			if name := desktopOCRNameFromBasicLine(line); name != "" {
+				parsed.Name = name
+			}
+		}
+		if parsed.Age == "" {
+			if match := desktopOCRAgePattern.FindStringSubmatch(line); len(match) >= 2 {
+				parsed.Age = match[1] + "\u5c81"
+			}
+		}
+		if parsed.Education == "" {
+			parsed.Education = desktopOCREducationFromLine(line)
+		}
+		if parsed.Experience == "" {
+			if match := desktopOCRExperiencePattern.FindStringSubmatch(line); len(match) >= 2 {
+				parsed.Experience = match[1] + "\u5e74\u7ecf\u9a8c"
+			}
+		}
+	}
+}
+
+func desktopOCRNameFromBasicLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) {
+		return ""
+	}
+	if desktopOCRLooksLikeMessageLine(line) {
+		return ""
+	}
+	for _, sep := range []string{" ", "\t", "，", ",", "·", "|"} {
+		if strings.Contains(line, sep) {
+			first := strings.TrimSpace(strings.SplitN(line, sep, 2)[0])
+			if desktopOCRLooksLikeStrictCandidateName(first) {
+				return first
+			}
+		}
+	}
+	if desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeMessageLine(line) && !desktopOCRLooksLikeProfileLine(line) {
+		return line
+	}
+	return ""
+}
+
+func desktopOCREducationFromLine(line string) string {
+	for _, edu := range []string{
+		"\u535a\u58eb", "\u7855\u58eb", "\u672c\u79d1", "\u5927\u4e13", "\u9ad8\u4e2d", "\u4e2d\u4e13", "\u521d\u4e2d",
+	} {
+		if strings.Contains(line, edu) {
+			return edu
+		}
+	}
+	return ""
+}
+
+func desktopOCRProfileWithBasics(parsed desktopOCRParsedChat, profile string) string {
+	lines := []string{}
+	if parsed.Age != "" {
+		lines = append(lines, "\u5e74\u9f84\uff1a"+parsed.Age)
+	}
+	if parsed.Education != "" {
+		lines = append(lines, "\u5b66\u5386\uff1a"+parsed.Education)
+	}
+	if parsed.Experience != "" {
+		lines = append(lines, "\u7ecf\u9a8c\uff1a"+parsed.Experience)
+	}
+	if strings.TrimSpace(profile) != "" {
+		lines = append(lines, strings.TrimSpace(profile))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func desktopOCRParsedChatImportable(parsed desktopOCRParsedChat) bool {
@@ -813,6 +915,9 @@ func desktopOCRLooksLikeProfileLine(line string) bool {
 		"\u671f\u671b\uff1a", "\u671f\u671b:", "\u6c9f\u901a\u804c\u4f4d", "\u6c9f\u901a\u7684\u804c\u4f4d",
 		"\u5de5\u4f5c\u7ecf\u5386", "\u6559\u80b2\u7ecf\u5386", "\u81f3\u4eca", "\u9ad8\u4e2d", "\u5927\u4e13", "\u672c\u79d1", "\u7855\u58eb", "\u535a\u58eb",
 	}) {
+		return true
+	}
+	if desktopOCRAgePattern.MatchString(line) || desktopOCRExperiencePattern.MatchString(line) {
 		return true
 	}
 	if desktopOCRLooksLikeExperienceLine(line) {
@@ -1048,6 +1153,16 @@ func desktopOCRContainsAny(value string, needles []string) bool {
 		}
 	}
 	return false
+}
+
+func anyString(value any) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func defaultString(value string, fallback string) string {

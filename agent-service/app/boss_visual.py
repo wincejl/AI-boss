@@ -495,8 +495,8 @@ def crop_chat_region(image):
 
 def chat_crop_ratios() -> tuple[float, float, float, float]:
     return (
-        ratio_env("BOSS_DESKTOP_CHAT_CROP_LEFT", 0.40),
-        ratio_env("BOSS_DESKTOP_CHAT_CROP_TOP", 0.05),
+        ratio_env("BOSS_DESKTOP_CHAT_CROP_LEFT", 0.26),
+        ratio_env("BOSS_DESKTOP_CHAT_CROP_TOP", 0.00),
         ratio_env("BOSS_DESKTOP_CHAT_CROP_RIGHT", 0.96),
         ratio_env("BOSS_DESKTOP_CHAT_CROP_BOTTOM", 0.92),
     )

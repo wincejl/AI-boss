@@ -190,7 +190,7 @@ def poll_paddle_job(client, job_url: str, job_id: str, headers: dict[str, str]) 
 def parse_paddle_jsonl(raw: str) -> tuple[str, list[dict[str, Any]]]:
     texts: list[str] = []
     blocks: list[dict[str, Any]] = []
-    for line in raw.splitlines():
+    for line_number, line in enumerate(raw.splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
@@ -201,19 +201,127 @@ def parse_paddle_jsonl(raw: str) -> tuple[str, list[dict[str, Any]]]:
         result = payload.get("result") if isinstance(payload, dict) else None
         if not isinstance(result, dict):
             continue
+        blocks.append(paddle_debug_block("result", result, line_number))
         for item in result.get("layoutParsingResults") or []:
             if not isinstance(item, dict):
                 continue
+            blocks.append(paddle_debug_block("layout", item, line_number))
+            for block in paddle_parsing_blocks(item):
+                block_text = str(block.get("text") or "").strip()
+                if block_text:
+                    texts.append(block_text)
+                blocks.append(block)
             markdown = item.get("markdown") or {}
             markdown_text = str(markdown.get("text") or "").strip()
-            if markdown_text:
+            if markdown_text and not texts:
                 texts.append(markdown_text)
-                blocks.append({"type": "markdown", "text": truncate_text(markdown_text)})
+                block = {"type": "markdown", "text": truncate_text(markdown_text)}
+                if isinstance(markdown, dict):
+                    block["keys"] = sorted(str(key) for key in markdown.keys())
+                    coords = paddle_find_coordinate_like(markdown)
+                    if coords:
+                        block["coordinates"] = coords
+                blocks.append(block)
         if not texts:
             text = str(result.get("text") or result.get("markdown") or "").strip()
             if text:
                 texts.append(text)
     return "\n\n".join(texts), blocks
+
+
+def paddle_parsing_blocks(item: dict[str, Any]) -> list[dict[str, Any]]:
+    pruned = item.get("prunedResult")
+    if not isinstance(pruned, dict):
+        return []
+    parsing = pruned.get("parsing_res_list")
+    if not isinstance(parsing, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for index, entry in enumerate(parsing):
+        if not isinstance(entry, dict):
+            continue
+        text = first_string_value(
+            entry,
+            (
+                "block_content",
+                "text",
+                "content",
+                "rec_text",
+                "markdown",
+            ),
+        )
+        bbox = first_value(entry, ("block_bbox", "bbox", "coordinate", "box"))
+        polygon = first_value(entry, ("block_polygon_points", "polygon_points", "points", "poly"))
+        block: dict[str, Any] = {
+            "type": "paddle_block",
+            "index": index,
+            "keys": sorted(str(key) for key in entry.keys()),
+        }
+        if text:
+            block["text"] = truncate_text(text)
+        if bbox is not None:
+            block["bbox"] = truncate_json_value(bbox)
+        if polygon is not None:
+            block["polygon"] = truncate_json_value(polygon)
+        label = first_string_value(entry, ("block_label", "label", "type"))
+        if label:
+            block["label"] = label
+        blocks.append(block)
+    return blocks
+
+
+def first_value(source: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in source:
+            return source.get(key)
+    return None
+
+
+def first_string_value(source: dict[str, Any], keys: tuple[str, ...]) -> str:
+    value = first_value(source, keys)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def paddle_debug_block(kind: str, value: dict[str, Any], line_number: int) -> dict[str, Any]:
+    block: dict[str, Any] = {
+        "type": f"paddle_{kind}",
+        "line": line_number,
+        "keys": sorted(str(key) for key in value.keys()),
+    }
+    coords = paddle_find_coordinate_like(value)
+    if coords:
+        block["coordinates"] = coords
+    return block
+
+
+def paddle_find_coordinate_like(value: Any, path: str = "", depth: int = 0) -> list[dict[str, Any]]:
+    if depth > 4:
+        return []
+    found: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_str = str(key)
+            child_path = f"{path}.{key_str}" if path else key_str
+            lower = key_str.lower()
+            if any(token in lower for token in ("bbox", "box", "coord", "poly", "rect", "points")):
+                found.append({"path": child_path, "value": truncate_json_value(child)})
+            found.extend(paddle_find_coordinate_like(child, child_path, depth + 1))
+    elif isinstance(value, list):
+        for index, child in enumerate(value[:8]):
+            found.extend(paddle_find_coordinate_like(child, f"{path}[{index}]", depth + 1))
+    return found[:20]
+
+
+def truncate_json_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [truncate_json_value(item) for item in value[:8]]
+    if isinstance(value, dict):
+        return {str(key): truncate_json_value(child) for key, child in list(value.items())[:12]}
+    return str(value)[:200]
 
 
 def image_png_bytes(image) -> bytes:

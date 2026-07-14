@@ -15,7 +15,7 @@ func TestDesktopOCRParseChatExtractsStructuredConversation(t *testing.T) {
 		"\u540c\u610f",
 	}, "\n")
 
-	got := desktopOCRParseChat(1, text)
+	got := desktopOCRParseChat(1, text, nil)
 	if !got.Importable {
 		t.Fatalf("expected structured OCR chat to be importable: %+v", got)
 	}
@@ -45,7 +45,7 @@ func TestDesktopOCRParseChatSkipsLegalNoise(t *testing.T) {
 		"\u62db\u8058\u65f6\u95f4",
 	}, "\n")
 
-	got := desktopOCRParseChat(2, text)
+	got := desktopOCRParseChat(2, text, nil)
 	if got.Importable {
 		t.Fatalf("expected pure legal/page noise to be skipped: %+v", got)
 	}
@@ -64,7 +64,7 @@ func TestDesktopOCRParseChatKeepsMessagesMentioningToday(t *testing.T) {
 		"\u4eca\u5929\u65b9\u4fbf\u5148\u7535\u8bdd\u6c9f\u901a\u4e00\u4e0b\u5417",
 	}, "\n")
 
-	got := desktopOCRParseChat(1, text)
+	got := desktopOCRParseChat(1, text, nil)
 	if len(got.Messages) != 1 {
 		t.Fatalf("expected one real message mentioning today, got %+v", got.Messages)
 	}
@@ -86,7 +86,7 @@ func TestDesktopOCRParseChatSeparatesProfileFromMessages(t *testing.T) {
 		"\u4f60\u597d\u554a\uff0c\u53ef\u4ee5\u804a\u4e00\u804a~",
 	}, "\n")
 
-	got := desktopOCRParseChat(1, text)
+	got := desktopOCRParseChat(1, text, nil)
 	if got.Name != "\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406\u5019\u9009\u4eba" {
 		t.Fatalf("expected role-based fallback name, got %q", got.Name)
 	}
@@ -106,5 +106,27 @@ func TestDesktopOCRParseChatSeparatesProfileFromMessages(t *testing.T) {
 	}
 	if !strings.Contains(got.Profile, "\u671f\u671b") || !strings.Contains(got.Profile, "2018.08") {
 		t.Fatalf("profile should keep resume and expectation lines: %q", got.Profile)
+	}
+}
+
+func TestDesktopOCRParseChatUsesPaddleBlocksForBasics(t *testing.T) {
+	boxes := []map[string]any{
+		{"type": "paddle_result", "keys": []any{"layoutParsingResults"}},
+		{"type": "paddle_block", "bbox": []any{20, 20, 260, 58}, "text": "\u738b\u6d4b\u8bd5 29\u5c81 \u672c\u79d1 6\u5e74\u7ecf\u9a8c"},
+		{"type": "paddle_block", "bbox": []any{20, 90, 420, 124}, "text": "\u671f\u671b\uff1a\u53a6\u95e8\u00b7\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406\u00b718-25K"},
+		{"type": "paddle_block", "bbox": []any{20, 170, 520, 205}, "text": "2020.06-\u81f3\u4eca \u793a\u4f8b\u79d1\u6280\u6709\u9650\u516c\u53f8\u00b7\u91c7\u8d2d\u4e3b\u7ba1"},
+		{"type": "paddle_block", "bbox": []any{360, 60, 700, 96}, "text": "\u6c9f\u901a\u804c\u4f4d\uff1a\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406"},
+		{"type": "paddle_block", "bbox": []any{400, 180, 700, 220}, "text": "\u4f60\u597d\uff0c\u662f\u5426\u8fd8\u62db\u4eba\uff1f"},
+	}
+
+	got := desktopOCRParseChat(1, "", boxes)
+	if got.Name != "\u738b\u6d4b\u8bd5" {
+		t.Fatalf("expected name from block basics, got %q", got.Name)
+	}
+	if got.Age != "29\u5c81" || got.Education != "\u672c\u79d1" || got.Experience != "6\u5e74\u7ecf\u9a8c" {
+		t.Fatalf("expected basics from block text, got age=%q education=%q experience=%q", got.Age, got.Education, got.Experience)
+	}
+	if !strings.Contains(got.Profile, "\u5e74\u9f84\uff1a29\u5c81") || !strings.Contains(got.Profile, "\u5b66\u5386\uff1a\u672c\u79d1") {
+		t.Fatalf("profile should include parsed basics: %q", got.Profile)
 	}
 }
