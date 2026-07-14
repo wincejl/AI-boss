@@ -91,6 +91,7 @@ export function DashboardShell() {
   const [conversationStatus, setConversationStatus] = useState<"open" | "closed">("open");
   const [syncingBossChats, setSyncingBossChats] = useState(false);
   const [importingBossDesktopOCR, setImportingBossDesktopOCR] = useState(false);
+  const [scanningBossDesktopOCR, setScanningBossDesktopOCR] = useState(false);
   const bossChatPollingRef = useRef(false);
 
   // 声音通知开关（客服端）
@@ -336,6 +337,23 @@ export function DashboardShell() {
     }
   }, [refreshConversations, selectConversation, selectedConversationId]);
 
+  const handleScanBossDesktopOCRChats = useCallback(async () => {
+    setScanningBossDesktopOCR(true);
+    try {
+      const result = await importBossDesktopOCRChats(5, true);
+      await refreshConversations();
+      if (!selectedConversationId && result.conversations[0]?.id) {
+        selectConversation(result.conversations[0].id);
+      }
+      const cleanupText = result.image_retention ? "screenshots kept" : "screenshots deleted";
+      toast.success(`BOSS desktop scan complete: imported ${result.imported}, updated ${result.updated}, skipped ${result.skipped}, ${cleanupText}`);
+    } catch (e) {
+      toast.error((e as Error).message || "BOSS desktop scan failed");
+    } finally {
+      setScanningBossDesktopOCR(false);
+    }
+  }, [refreshConversations, selectConversation, selectedConversationId]);
+
   const syncBossChatsQuietly = useCallback(async () => {
     if (bossChatPollingRef.current) return;
     bossChatPollingRef.current = true;
@@ -418,7 +436,9 @@ export function DashboardShell() {
         onSyncBossChats={!isInternalChat ? handleSyncBossChats : undefined}
         syncingBossChats={syncingBossChats}
         onImportBossDesktopOCRChats={!isInternalChat ? handleImportBossDesktopOCRChats : undefined}
+        onScanBossDesktopOCRChats={!isInternalChat ? handleScanBossDesktopOCRChats : undefined}
         importingBossDesktopOCR={importingBossDesktopOCR}
+        scanningBossDesktopOCR={scanningBossDesktopOCR}
       />
     </div>
   ) : (

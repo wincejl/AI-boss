@@ -127,6 +127,8 @@ export async function importBossDesktopOCRChats(count = 5, draft = true): Promis
   skipped: number;
   image_retention: boolean;
   deleted_images: Array<{ path: string; deleted: boolean; error?: string }>;
+  parsed: unknown[];
+  warnings: string[];
   requires_review: boolean;
   message: string;
 }> {
@@ -148,6 +150,8 @@ export async function importBossDesktopOCRChats(count = 5, draft = true): Promis
     skipped: Number(data.skipped ?? 0),
     image_retention: Boolean(data.image_retention),
     deleted_images: Array.isArray(data.deleted_images) ? data.deleted_images : [],
+    parsed: Array.isArray(data.parsed) ? data.parsed : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
     requires_review: Boolean(data.requires_review),
     message: data.message ?? "",
   };

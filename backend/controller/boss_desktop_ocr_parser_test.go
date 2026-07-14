@@ -72,3 +72,39 @@ func TestDesktopOCRParseChatKeepsMessagesMentioningToday(t *testing.T) {
 		t.Fatalf("message content was filtered incorrectly: %+v", got.Messages)
 	}
 }
+
+func TestDesktopOCRParseChatSeparatesProfileFromMessages(t *testing.T) {
+	text := strings.Join([]string{
+		"\u6700\u540e\u6d3b\u8dc3 14:58",
+		"2018.08-\u81f3\u4eca \u4e16\u7eaa\u597d\u672a\u6765\u6559\u80b2\u79d1\u6280\u00b7\u9500\u552e\u603b\u76d1",
+		"2010-2013 \u9ad8\u4e2d\u00b7\u9ad8\u4e2d",
+		"\u6c9f\u901a\u804c\u4f4d\uff1a\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406",
+		"\u671f\u671b\uff1a\u53a6\u95e8\u00b7\u8de8\u5883\u7535\u5546\u8fd0\u8425\u9762\u8bae",
+		"10:06",
+		"7\u670814\u65e5 \u6c9f\u901a\u7684\u804c\u4f4d-\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406",
+		"\u4f60\u597d\uff0c\u662f\u5426\u8fd8\u62db\u4eba\uff1f",
+		"\u4f60\u597d\u554a\uff0c\u53ef\u4ee5\u804a\u4e00\u804a~",
+	}, "\n")
+
+	got := desktopOCRParseChat(1, text)
+	if got.Name != "\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406\u5019\u9009\u4eba" {
+		t.Fatalf("expected role-based fallback name, got %q", got.Name)
+	}
+	if got.Role != "\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406" {
+		t.Fatalf("expected communication role, got %q", got.Role)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("expected only the two chat lines as messages, got %+v", got.Messages)
+	}
+	if got.Messages[0].Sender != "candidate" || got.Messages[1].Sender != "agent" {
+		t.Fatalf("unexpected sender split: %+v", got.Messages)
+	}
+	for _, msg := range got.Messages {
+		if strings.Contains(msg.Content, "2018.08") || strings.Contains(msg.Content, "\u671f\u671b") || strings.Contains(msg.Content, "\u6c9f\u901a\u7684\u804c\u4f4d") {
+			t.Fatalf("profile line leaked into messages: %+v", got.Messages)
+		}
+	}
+	if !strings.Contains(got.Profile, "\u671f\u671b") || !strings.Contains(got.Profile, "2018.08") {
+		t.Fatalf("profile should keep resume and expectation lines: %q", got.Profile)
+	}
+}

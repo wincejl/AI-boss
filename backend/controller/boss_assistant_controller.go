@@ -630,8 +630,14 @@ func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
 				continue
 			}
 		}
-		if parsed.Role == "BOSS Desktop OCR" && desktopOCRLooksLikeRoleLine(line) {
-			parsed.Role = line
+		if role := desktopOCRRoleFromLine(line); role != "" {
+			if parsed.Role == "BOSS Desktop OCR" || strings.Contains(line, "\u6c9f\u901a\u804c\u4f4d") || strings.Contains(line, "\u6c9f\u901a\u7684\u804c\u4f4d") {
+				parsed.Role = role
+			}
+			profileLines = append(profileLines, line)
+			continue
+		}
+		if desktopOCRLooksLikeProfileLine(line) {
 			profileLines = append(profileLines, line)
 			continue
 		}
@@ -643,6 +649,11 @@ func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
 			})
 			continue
 		}
+		if parsed.Role == "BOSS Desktop OCR" && desktopOCRLooksLikeRoleLine(line) {
+			parsed.Role = desktopOCRCleanRole(line)
+			profileLines = append(profileLines, line)
+			continue
+		}
 		if len(profileLines) < 10 {
 			profileLines = append(profileLines, line)
 		}
@@ -650,6 +661,9 @@ func desktopOCRParseChat(index int, raw string) desktopOCRParsedChat {
 
 	if parsed.Name == "" {
 		parsed.Name = "BOSS Desktop OCR #" + strconv.Itoa(index)
+	}
+	if strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") && parsed.Role != "BOSS Desktop OCR" {
+		parsed.Name = desktopOCRFallbackNameFromRole(parsed.Role)
 	}
 	if len(parsed.Messages) > 0 {
 		last := parsed.Messages[len(parsed.Messages)-1]
@@ -756,9 +770,84 @@ func desktopOCRLooksLikeRoleLine(line string) bool {
 	return false
 }
 
-func desktopOCRLooksLikeMessageLine(line string) bool {
+func desktopOCRRoleFromLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) {
+		return ""
+	}
+	for _, prefix := range []string{
+		"\u6c9f\u901a\u804c\u4f4d\uff1a",
+		"\u6c9f\u901a\u804c\u4f4d:",
+		"\u6c9f\u901a\u7684\u804c\u4f4d-",
+		"\u6c9f\u901a\u7684\u804c\u4f4d\uff1a",
+		"\u6c9f\u901a\u7684\u804c\u4f4d:",
+		"\u804c\u4f4d\uff1a",
+		"\u804c\u4f4d:",
+	} {
+		if strings.Contains(line, prefix) {
+			parts := strings.SplitN(line, prefix, 2)
+			if len(parts) == 2 {
+				return desktopOCRCleanRole(parts[1])
+			}
+		}
+	}
+	return ""
+}
+
+func desktopOCRCleanRole(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, " \t-:：")
+	if len([]rune(value)) > 40 {
+		runes := []rune(value)
+		value = string(runes[:40])
+	}
+	return value
+}
+
+func desktopOCRLooksLikeProfileLine(line string) bool {
 	line = strings.TrimSpace(line)
 	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsTimeOrStatusLine(line) || desktopOCRIsControlLine(line) {
+		return false
+	}
+	if desktopOCRContainsAny(line, []string{
+		"\u671f\u671b\uff1a", "\u671f\u671b:", "\u6c9f\u901a\u804c\u4f4d", "\u6c9f\u901a\u7684\u804c\u4f4d",
+		"\u5de5\u4f5c\u7ecf\u5386", "\u6559\u80b2\u7ecf\u5386", "\u81f3\u4eca", "\u9ad8\u4e2d", "\u5927\u4e13", "\u672c\u79d1", "\u7855\u58eb", "\u535a\u58eb",
+	}) {
+		return true
+	}
+	if desktopOCRLooksLikeExperienceLine(line) {
+		return true
+	}
+	return false
+}
+
+func desktopOCRLooksLikeExperienceLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if len([]rune(line)) < 6 {
+		return false
+	}
+	for idx, r := range []rune(line) {
+		if idx >= 4 {
+			break
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return strings.ContainsAny(line, "-/~") || strings.Contains(line, "\u81f3")
+}
+
+func desktopOCRFallbackNameFromRole(role string) string {
+	role = desktopOCRCleanRole(role)
+	if role == "" || role == "BOSS Desktop OCR" {
+		return "BOSS Desktop OCR"
+	}
+	return role + "\u5019\u9009\u4eba"
+}
+
+func desktopOCRLooksLikeMessageLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsTimeOrStatusLine(line) || desktopOCRIsControlLine(line) || desktopOCRLooksLikeProfileLine(line) {
 		return false
 	}
 	runes := []rune(line)
@@ -778,8 +867,14 @@ func desktopOCRLooksLikeMessageLine(line string) bool {
 func desktopOCRGuessSender(line string) string {
 	line = strings.TrimSpace(line)
 	if desktopOCRContainsAny(line, []string{
+		"\u662f\u5426\u8fd8\u62db\u4eba", "\u8fd8\u62db\u4eba", "\u6211\u60f3\u4e86\u89e3", "\u6211\u60f3\u95ee",
+	}) {
+		return "candidate"
+	}
+	if desktopOCRContainsAny(line, []string{
 		"\u6211\u8fd9\u8fb9", "\u6211\u4eec\u8fd9\u8fb9", "\u770b\u4e86\u4f60\u7684\u7b80\u5386", "\u770b\u4e86\u60a8\u7684\u7b80\u5386",
 		"\u53d1\u60a8", "\u53d1\u4f60", "\u7ed9\u60a8", "\u7ed9\u4f60", "\u6211\u4eec\u5728\u62db", "\u8fd9\u4e2a\u5c97\u4f4d",
+		"\u53ef\u4ee5\u804a\u4e00\u804a", "\u53ef\u4ee5\u5148\u804a", "\u65b9\u4fbf\u804a",
 	}) {
 		return "agent"
 	}
@@ -853,6 +948,8 @@ func desktopOCRIsStrictNoiseLine(line string) bool {
 		"\u6709\u6548\u7f29\u77ed",
 		"\u62db\u8058\u65f6\u95f4",
 		"\u7684\u4eba\u90fd\u5e73\u5b89\u5e78\u798f",
+		"\u6700\u540e\u6d3b\u8dc3",
+		"BOSS\u5019\u9009\u4eba\uff1a",
 	})
 }
 

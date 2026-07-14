@@ -26,7 +26,9 @@ interface ConversationSidebarProps {
   onSyncBossChats?: () => void;
   syncingBossChats?: boolean;
   onImportBossDesktopOCRChats?: () => void;
+  onScanBossDesktopOCRChats?: () => void;
   importingBossDesktopOCR?: boolean;
+  scanningBossDesktopOCR?: boolean;
 }
 
 export function ConversationSidebar({
@@ -44,7 +46,9 @@ export function ConversationSidebar({
   onSyncBossChats,
   syncingBossChats = false,
   onImportBossDesktopOCRChats,
+  onScanBossDesktopOCRChats,
   importingBossDesktopOCR = false,
+  scanningBossDesktopOCR = false,
 }: ConversationSidebarProps) {
   const { t } = useI18n();
   return (
@@ -92,6 +96,19 @@ export function ConversationSidebar({
           >
             <ScanText className={`w-4 h-4 ${importingBossDesktopOCR ? "animate-pulse" : ""}`} />
             导入当前BOSS对话
+          </Button>
+        )}
+        {mode === "visitor" && onScanBossDesktopOCRChats && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full mt-2 gap-2"
+            onClick={onScanBossDesktopOCRChats}
+            disabled={scanningBossDesktopOCR || importingBossDesktopOCR}
+          >
+            <ScanText className={`w-4 h-4 ${scanningBossDesktopOCR ? "animate-pulse" : ""}`} />
+            {"\u626b\u63cf\u6700\u8fd15\u4e2aBOSS\u5bf9\u8bdd"}
           </Button>
         )}
         <ConversationSearch value={searchQuery} onChange={onSearchChange} />
