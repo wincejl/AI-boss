@@ -119,6 +119,40 @@ export async function importBossChats(limit = 50, incremental = false): Promise<
   };
 }
 
+export async function importBossDesktopOCRChats(count = 5, draft = true): Promise<{
+  conversations: ConversationSummary[];
+  imported: number;
+  updated: number;
+  closed: number;
+  skipped: number;
+  image_retention: boolean;
+  deleted_images: Array<{ path: string; deleted: boolean; error?: string }>;
+  requires_review: boolean;
+  message: string;
+}> {
+  const res = await fetch(apiUrl("/agent/boss-assistant/import-desktop-ocr-chats"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...getAgentHeaders() },
+    body: JSON.stringify({ count, draft }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "BOSS desktop OCR import failed");
+  }
+  const data = await res.json();
+  return {
+    conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    imported: Number(data.imported ?? 0),
+    updated: Number(data.updated ?? 0),
+    closed: Number(data.closed ?? 0),
+    skipped: Number(data.skipped ?? 0),
+    image_retention: Boolean(data.image_retention),
+    deleted_images: Array.isArray(data.deleted_images) ? data.deleted_images : [],
+    requires_review: Boolean(data.requires_review),
+    message: data.message ?? "",
+  };
+}
+
 export async function closeConversation(conversationId: number): Promise<void> {
   const res = await fetch(apiUrl(`/conversations/${conversationId}/close`), {
     method: "POST",

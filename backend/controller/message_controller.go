@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -116,6 +117,10 @@ func (mc *MessageController) CreateMessage(c *gin.Context) {
 		detail, _ = mc.conversationService.GetConversationDetail(req.ConversationID, userID)
 	}
 	if req.SenderIsAgent && detail != nil && strings.HasPrefix(detail.Referrer, "boss://chat/") {
+		if !bossMessageSendEnabled() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "BOSS message auto-send is disabled by safety mode; review the draft and send it manually in BOSS, or set BOSS_MESSAGE_SEND_ENABLED=true"})
+			return
+		}
 		if req.FileURL != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "BOSS同步发送暂只支持文本消息"})
 			return
@@ -170,6 +175,15 @@ func (mc *MessageController) CreateMessage(c *gin.Context) {
 
 	// 返回持久化后的完整消息：客服端/访客端可在发送成功后立即更新 UI，避免仅依赖 WebSocket 时出现「空了要等刷新」
 	c.JSON(http.StatusOK, msg)
+}
+
+func bossMessageSendEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BOSS_MESSAGE_SEND_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ListMessages 返回指定会话的消息列表。

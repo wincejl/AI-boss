@@ -1,4 +1,5 @@
 from app import boss_visual
+from pathlib import Path
 from app.schemas import (
     BossDesktopDraftFromOCRRequest,
     BossDesktopScanDraftRequest,
@@ -101,8 +102,22 @@ def test_scan_and_draft_uses_mocked_ocr_text() -> None:
     assert result["drafts"][0]["draft"]["requires_human_approval"] is True
 
 
+def test_cleanup_image_paths_deletes_temp_file(tmp_path: Path) -> None:
+    image_path = tmp_path / "boss.png"
+    image_path.write_bytes(b"png")
+
+    result = boss_visual.cleanup_image_paths([image_path])
+
+    assert result == [{"path": str(image_path), "deleted": True}]
+    assert not image_path.exists()
+
+
 if __name__ == "__main__":
     test_latest_message_hint_filters_button_labels()
     test_draft_from_ocr_text_returns_human_review_draft()
     test_scan_and_draft_uses_mocked_ocr_text()
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        test_cleanup_image_paths_deletes_temp_file(Path(tmp))
     print("ok")

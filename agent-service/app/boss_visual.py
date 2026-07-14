@@ -225,7 +225,11 @@ def capture_boss_window() -> dict[str, Any]:
     output_dir = desktop_capture_dir("boss-desktop-captures")
     output_path = output_dir / f"boss-{timestamp_id()}.png"
     result = run_wgc(["--auto-boss", str(output_path)], timeout=60)
-    return wgc_command_result("boss_desktop_wgc_capture", result, [output_path])
+    payload = wgc_command_result("boss_desktop_wgc_capture", result, [output_path])
+    cleanup = cleanup_image_paths([output_path])
+    payload["deleted_images"] = cleanup
+    payload["image_retention"] = False
+    return payload
 
 
 def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
@@ -250,7 +254,12 @@ def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
     extra: dict[str, Any] = {"requested_count": safe_count, "ocr_requested": run_ocr}
     if run_ocr:
         extra["ocr_results"] = ocr_wgc_chat_images(images)
-    return wgc_command_result("boss_desktop_wgc_scan", result, images, extra=extra)
+    payload = wgc_command_result("boss_desktop_wgc_scan", result, images, extra=extra)
+    cleanup = cleanup_image_paths(images)
+    cleanup_dir(output_dir)
+    payload["deleted_images"] = cleanup
+    payload["image_retention"] = False
+    return payload
 
 
 def draft_from_ocr_text(payload) -> dict[str, Any]:
@@ -389,6 +398,28 @@ def image_metadata(path: Path) -> dict[str, Any]:
         "created_at": int(stat.st_ctime),
         "modified_at": int(stat.st_mtime),
     }
+
+
+def cleanup_image_paths(paths: list[Path]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for path in paths:
+        item = {"path": str(path), "deleted": False}
+        try:
+            if path.exists():
+                path.unlink()
+                item["deleted"] = True
+        except Exception as exc:
+            item["error"] = str(exc)
+        results.append(item)
+    return results
+
+
+def cleanup_dir(path: Path) -> None:
+    try:
+        if path.exists() and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+    except Exception:
+        pass
 
 
 def latest_message_hint(text: str) -> str:

@@ -5,7 +5,7 @@ import { ConversationHeader, type ConversationFilter } from "./ConversationHeade
 import { ConversationSearch } from "./ConversationSearch";
 import { ConversationList } from "./ConversationList";
 import { Button } from "@/components/ui/button";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, ScanText } from "lucide-react";
 import { useI18n } from "@/lib/i18n/provider";
 
 type ConversationStatus = "open" | "closed";
@@ -25,6 +25,8 @@ interface ConversationSidebarProps {
   onNewClick?: () => void;
   onSyncBossChats?: () => void;
   syncingBossChats?: boolean;
+  onImportBossDesktopOCRChats?: () => void;
+  importingBossDesktopOCR?: boolean;
 }
 
 export function ConversationSidebar({
@@ -41,6 +43,8 @@ export function ConversationSidebar({
   onNewClick,
   onSyncBossChats,
   syncingBossChats = false,
+  onImportBossDesktopOCRChats,
+  importingBossDesktopOCR = false,
 }: ConversationSidebarProps) {
   const { t } = useI18n();
   return (
@@ -75,6 +79,19 @@ export function ConversationSidebar({
           >
             <RefreshCw className={`w-4 h-4 ${syncingBossChats ? "animate-spin" : ""}`} />
             同步BOSS沟通
+          </Button>
+        )}
+        {mode === "visitor" && onImportBossDesktopOCRChats && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full mt-2 gap-2"
+            onClick={onImportBossDesktopOCRChats}
+            disabled={importingBossDesktopOCR}
+          >
+            <ScanText className={`w-4 h-4 ${importingBossDesktopOCR ? "animate-pulse" : ""}`} />
+            导入BOSS桌面对话
           </Button>
         )}
         <ConversationSearch value={searchQuery} onChange={onSearchChange} />

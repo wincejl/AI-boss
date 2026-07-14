@@ -143,9 +143,13 @@ func RegisterRoutes(r *gin.Engine, controllers ControllerSet, wsHandler gin.Hand
 		// BOSS desktop assistant
 		routes.GET("/agent/boss-assistant/status", controllers.BossAssistant.GetStatus)
 		routes.POST("/agent/boss-assistant/detect", controllers.BossAssistant.DetectAndSave)
+		routes.GET("/agent/boss-assistant/visual-probe", controllers.BossAssistant.ProbeVisual)
+		routes.POST("/agent/boss-assistant/visual-region-probe", controllers.BossAssistant.ProbeVisualRegion)
+		routes.POST("/agent/boss-assistant/visual-ocr-region", controllers.BossAssistant.ProbeVisualOCRRegion)
 		routes.POST("/agent/boss-assistant/click-menu", controllers.BossAssistant.ClickMenu)
 		routes.POST("/agent/boss-assistant/search", controllers.BossAssistant.SearchCandidates)
 		routes.POST("/agent/boss-assistant/import-candidates", controllers.BossAssistant.ImportCandidates)
+		routes.POST("/agent/boss-assistant/import-desktop-ocr-chats", controllers.BossAssistant.ImportDesktopOCRChats)
 		routes.POST("/agent/boss-assistant/import-chats", controllers.BossAssistant.ImportChats)
 		routes.POST("/agent/boss-assistant/delete-chat", controllers.BossAssistant.DeleteChat)
 		routes.PUT("/agent/boss-assistant/config", controllers.BossAssistant.SaveConfig)

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -66,15 +67,45 @@ func TestBossAutoSyncEnabledFollowsAutoReply(t *testing.T) {
 
 func TestBossAutoSyncInterval(t *testing.T) {
 	t.Setenv("BOSS_AUTO_SYNC_INTERVAL_SECONDS", "")
-	if got := bossAutoSyncInterval(); got != 5*time.Second {
+	if got := bossAutoSyncInterval(); got != 60*time.Second {
 		t.Fatalf("unexpected default interval: %s", got)
 	}
-	t.Setenv("BOSS_AUTO_SYNC_INTERVAL_SECONDS", "8")
-	if got := bossAutoSyncInterval(); got != 8*time.Second {
+	t.Setenv("BOSS_AUTO_SYNC_INTERVAL_SECONDS", "45")
+	if got := bossAutoSyncInterval(); got != 45*time.Second {
 		t.Fatalf("unexpected custom interval: %s", got)
 	}
 	t.Setenv("BOSS_AUTO_SYNC_INTERVAL_SECONDS", "1")
-	if got := bossAutoSyncInterval(); got != 5*time.Second {
+	if got := bossAutoSyncInterval(); got != 60*time.Second {
 		t.Fatalf("too small interval should fall back: %s", got)
+	}
+}
+
+func TestBossMessageSendEnabled(t *testing.T) {
+	t.Setenv("BOSS_MESSAGE_SEND_ENABLED", "")
+	if bossMessageSendEnabled() {
+		t.Fatal("expected BOSS message send to be disabled by default")
+	}
+	t.Setenv("BOSS_MESSAGE_SEND_ENABLED", "true")
+	if !bossMessageSendEnabled() {
+		t.Fatal("expected explicit BOSS message send to be enabled")
+	}
+}
+
+func TestDesktopOCRProfileKeyNormalizesText(t *testing.T) {
+	a := desktopOCRProfileKey(" hello\n  world ")
+	b := desktopOCRProfileKey("hello world")
+	if a == "" || a != b {
+		t.Fatalf("expected normalized keys to match, got %q vs %q", a, b)
+	}
+}
+
+func TestDesktopOCRLatestMessageFiltersButtons(t *testing.T) {
+	text := "23岁\n同意\n拒绝\n候选人说下周到岗\n<div>image</div>\n现在在厦门"
+	got := desktopOCRLatestMessage(text)
+	if strings.Contains(got, "同意") || strings.Contains(got, "拒绝") || strings.Contains(got, "<div") {
+		t.Fatalf("latest message should filter controls and image markup: %q", got)
+	}
+	if !strings.Contains(got, "候选人说下周到岗") || !strings.Contains(got, "现在在厦门") {
+		t.Fatalf("latest message should keep useful lines: %q", got)
 	}
 }

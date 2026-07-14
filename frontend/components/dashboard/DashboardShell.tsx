@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/features/agent/hooks/useAuth";
 import { useConversations } from "@/features/agent/hooks/useConversations";
 import { useMessages } from "@/features/agent/hooks/useMessages";
-import { closeConversation, deleteBossChatConversation, importBossChats, initInternalConversation } from "@/features/agent/services/conversationApi";
+import { closeConversation, deleteBossChatConversation, importBossChats, importBossDesktopOCRChats, initInternalConversation } from "@/features/agent/services/conversationApi";
 import { toast } from "@/hooks/useToast";
 import { useProfile } from "@/features/agent/hooks/useProfile";
 import { Profile } from "@/features/agent/types";
@@ -90,6 +90,7 @@ export function DashboardShell() {
   const [conversationFilter, setConversationFilter] = useState<"all" | "mine" | "others">("all");
   const [conversationStatus, setConversationStatus] = useState<"open" | "closed">("open");
   const [syncingBossChats, setSyncingBossChats] = useState(false);
+  const [importingBossDesktopOCR, setImportingBossDesktopOCR] = useState(false);
   const bossChatPollingRef = useRef(false);
 
   // 声音通知开关（客服端）
@@ -318,6 +319,23 @@ export function DashboardShell() {
     }
   }, [refreshConversations, selectConversation, selectedConversationId]);
 
+  const handleImportBossDesktopOCRChats = useCallback(async () => {
+    setImportingBossDesktopOCR(true);
+    try {
+      const result = await importBossDesktopOCRChats(5, true);
+      await refreshConversations();
+      if (!selectedConversationId && result.conversations[0]?.id) {
+        selectConversation(result.conversations[0].id);
+      }
+      const cleanupText = result.image_retention ? "截图仍保留" : "截图已删除";
+      toast.success(`BOSS桌面对话导入完成：新增${result.imported}，更新${result.updated}，跳过${result.skipped}；${cleanupText}`);
+    } catch (e) {
+      toast.error((e as Error).message || "BOSS桌面对话导入失败");
+    } finally {
+      setImportingBossDesktopOCR(false);
+    }
+  }, [refreshConversations, selectConversation, selectedConversationId]);
+
   const syncBossChatsQuietly = useCallback(async () => {
     if (bossChatPollingRef.current) return;
     bossChatPollingRef.current = true;
@@ -399,6 +417,8 @@ export function DashboardShell() {
         onNewClick={isInternalChat ? handleNewInternalConversation : undefined}
         onSyncBossChats={!isInternalChat ? handleSyncBossChats : undefined}
         syncingBossChats={syncingBossChats}
+        onImportBossDesktopOCRChats={!isInternalChat ? handleImportBossDesktopOCRChats : undefined}
+        importingBossDesktopOCR={importingBossDesktopOCR}
       />
     </div>
   ) : (

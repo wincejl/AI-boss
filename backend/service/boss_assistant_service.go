@@ -23,20 +23,21 @@ type BossAssistantService struct {
 }
 
 type BossAssistantStatus struct {
-	Detected      bool   `json:"detected"`
-	SavedExePath  string `json:"saved_exe_path"`
-	ExePath       string `json:"exe_path"`
-	ProcessID     int    `json:"process_id"`
-	ProcessName   string `json:"process_name"`
-	WindowTitle   string `json:"window_title"`
-	Visible       bool   `json:"visible"`
-	Minimized     bool   `json:"minimized"`
-	WindowLeft    int    `json:"window_left"`
-	WindowTop     int    `json:"window_top"`
-	WindowWidth   int    `json:"window_width"`
-	WindowHeight  int    `json:"window_height"`
-	LastCheckedAt string `json:"last_checked_at"`
-	Message       string `json:"message"`
+	Detected      bool                   `json:"detected"`
+	SavedExePath  string                 `json:"saved_exe_path"`
+	ExePath       string                 `json:"exe_path"`
+	ProcessID     int                    `json:"process_id"`
+	ProcessName   string                 `json:"process_name"`
+	WindowTitle   string                 `json:"window_title"`
+	Visible       bool                   `json:"visible"`
+	Minimized     bool                   `json:"minimized"`
+	WindowLeft    int                    `json:"window_left"`
+	WindowTop     int                    `json:"window_top"`
+	WindowWidth   int                    `json:"window_width"`
+	WindowHeight  int                    `json:"window_height"`
+	LastCheckedAt string                 `json:"last_checked_at"`
+	Message       string                 `json:"message"`
+	VisualProbe   *BossVisualProbeResult `json:"visual_probe,omitempty"`
 }
 
 type SaveBossAssistantConfigInput struct {
@@ -70,6 +71,104 @@ type ClickBossMenuResult struct {
 type BossSearchResult struct {
 	Output  string `json:"output"`
 	Message string `json:"message"`
+}
+
+type BossVisualProbeResult struct {
+	OK                        bool            `json:"ok"`
+	Mode                      string          `json:"mode"`
+	Platform                  string          `json:"platform"`
+	Detected                  bool            `json:"detected"`
+	ProcessCount              int             `json:"process_count"`
+	Dependencies              map[string]bool `json:"dependencies"`
+	TesseractPath             string          `json:"tesseract_path"`
+	ScreenshotProbeEnabled    bool            `json:"screenshot_probe_enabled"`
+	OCRProbeEnabled           bool            `json:"ocr_probe_enabled"`
+	Screen                    map[string]int  `json:"screen,omitempty"`
+	Supported                 bool            `json:"supported"`
+	TemplateMatchingSupported bool            `json:"template_matching_supported"`
+	OCRSupported              bool            `json:"ocr_supported"`
+	OCRProvider               map[string]any  `json:"ocr_provider,omitempty"`
+	Safety                    map[string]bool `json:"safety,omitempty"`
+	Recommendations           []string        `json:"recommendations,omitempty"`
+	Message                   string          `json:"message"`
+	Error                     string          `json:"error,omitempty"`
+}
+
+type BossVisualRegionProbeInput struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type BossVisualRegionProbeResult struct {
+	OK         bool            `json:"ok"`
+	Mode       string          `json:"mode"`
+	Region     map[string]int  `json:"region,omitempty"`
+	AverageRGB map[string]int  `json:"average_rgb,omitempty"`
+	ElapsedMS  int             `json:"elapsed_ms,omitempty"`
+	Safety     map[string]bool `json:"safety,omitempty"`
+	Message    string          `json:"message"`
+	Error      string          `json:"error,omitempty"`
+}
+
+type BossVisualOCRRegionInput struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type BossVisualOCRRegionResult struct {
+	OK          bool             `json:"ok"`
+	Mode        string           `json:"mode"`
+	Provider    string           `json:"provider"`
+	Text        string           `json:"text"`
+	Boxes       []map[string]any `json:"boxes,omitempty"`
+	Confidence  *float64         `json:"confidence,omitempty"`
+	Region      map[string]int   `json:"region,omitempty"`
+	OCRProvider map[string]any   `json:"ocr_provider,omitempty"`
+	ElapsedMS   int              `json:"elapsed_ms,omitempty"`
+	Safety      map[string]bool  `json:"safety,omitempty"`
+	Message     string           `json:"message"`
+	Error       string           `json:"error,omitempty"`
+}
+
+type BossDesktopScanInput struct {
+	Count int  `json:"count"`
+	OCR   bool `json:"ocr"`
+}
+
+type BossDesktopDeletedImage struct {
+	Path    string `json:"path"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error,omitempty"`
+}
+
+type BossDesktopOCRResult struct {
+	OK        bool             `json:"ok"`
+	Provider  string           `json:"provider"`
+	Text      string           `json:"text"`
+	Boxes     []map[string]any `json:"boxes,omitempty"`
+	Path      string           `json:"path,omitempty"`
+	Crop      []float64        `json:"crop,omitempty"`
+	ElapsedMS int              `json:"elapsed_ms,omitempty"`
+	Message   string           `json:"message"`
+	Error     string           `json:"error,omitempty"`
+}
+
+type BossDesktopScanResult struct {
+	OK             bool                      `json:"ok"`
+	Mode           string                    `json:"mode"`
+	ReturnCode     int                       `json:"return_code"`
+	RequestedCount int                       `json:"requested_count"`
+	OCRRequested   bool                      `json:"ocr_requested"`
+	OCRResults     []BossDesktopOCRResult    `json:"ocr_results,omitempty"`
+	DeletedImages  []BossDesktopDeletedImage `json:"deleted_images,omitempty"`
+	ImageRetention bool                      `json:"image_retention"`
+	Stdout         string                    `json:"stdout,omitempty"`
+	Stderr         string                    `json:"stderr,omitempty"`
+	Message        string                    `json:"message"`
 }
 
 type BossCandidateDraft struct {
@@ -173,6 +272,7 @@ func (s *BossAssistantService) GetStatus() (*BossAssistantStatus, error) {
 		return nil, err
 	}
 	status.SavedExePath = saved
+	status.VisualProbe = s.safeVisualProbe()
 	return status, nil
 }
 
@@ -190,6 +290,7 @@ func (s *BossAssistantService) DetectAndSave() (*BossAssistantStatus, error) {
 		}
 		status.SavedExePath = saved
 	}
+	status.VisualProbe = s.safeVisualProbe()
 	return status, nil
 }
 
@@ -203,7 +304,20 @@ func (s *BossAssistantService) SaveConfig(input SaveBossAssistantConfigInput) (*
 	}
 	status := s.detectBossClient()
 	status.SavedExePath = exePath
+	status.VisualProbe = s.safeVisualProbe()
 	return status, nil
+}
+
+func (s *BossAssistantService) ProbeVisual() (*BossVisualProbeResult, error) {
+	return runBossVisualProbe()
+}
+
+func (s *BossAssistantService) ProbeVisualRegion(input BossVisualRegionProbeInput) (*BossVisualRegionProbeResult, error) {
+	return runBossVisualRegionProbe(input)
+}
+
+func (s *BossAssistantService) ProbeVisualOCRRegion(input BossVisualOCRRegionInput) (*BossVisualOCRRegionResult, error) {
+	return runBossVisualOCRRegion(input)
 }
 
 func (s *BossAssistantService) ClickMenu(input ClickBossMenuInput) (*ClickBossMenuResult, error) {
@@ -283,6 +397,19 @@ func (s *BossAssistantService) ReadChats(limit int, incremental bool) (*BossChat
 	return runBossBrowserAgentChats(normalizeBossCandidateLimit(limit), incremental)
 }
 
+func (s *BossAssistantService) ScanDesktopOCRChats(count int) (*BossDesktopScanResult, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BOSS desktop OCR scan is only available on Windows")
+	}
+	if count <= 0 {
+		count = 1
+	}
+	if count > 10 {
+		count = 10
+	}
+	return runBossDesktopScan(BossDesktopScanInput{Count: count, OCR: true})
+}
+
 func (s *BossAssistantService) SendChatMessage(input BossChatMessageInput) (*BossChatMessageResult, error) {
 	name := strings.TrimSpace(input.Name)
 	content := strings.TrimSpace(input.Content)
@@ -355,6 +482,141 @@ func runBossBrowserAgentSearch(payload bossSearchPayload) (*BossSearchResult, er
 		out.Message = "BOSS browser search executed"
 	}
 	return &BossSearchResult{Output: out.Output, Message: out.Message}, nil
+}
+
+func (s *BossAssistantService) safeVisualProbe() *BossVisualProbeResult {
+	result, err := runBossVisualProbe()
+	if err == nil {
+		return result
+	}
+	return &BossVisualProbeResult{
+		OK:       false,
+		Mode:     "visual_capability_probe",
+		Platform: runtime.GOOS,
+		Safety: map[string]bool{
+			"read_only":                        true,
+			"no_clicks":                        true,
+			"no_text_input":                    true,
+			"no_messages":                      true,
+			"no_fullscreen_capture_by_default": true,
+			"no_ocr_by_default":                true,
+			"no_image_storage":                 true,
+		},
+		Message: "visual probe unavailable",
+		Error:   err.Error(),
+	}
+}
+
+func runBossVisualProbe() (*BossVisualProbeResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/boss/visual/probe", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss visual probe failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossVisualProbeResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "visual_capability_probe"
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "visual capability probe completed"
+	}
+	return &out, nil
+}
+
+func runBossVisualRegionProbe(input BossVisualRegionProbeInput) (*BossVisualRegionProbeResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/visual/region-probe", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss visual region probe failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossVisualRegionProbeResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "visual_region_probe"
+	}
+	return &out, nil
+}
+
+func runBossVisualOCRRegion(input BossVisualOCRRegionInput) (*BossVisualOCRRegionResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/visual/ocr-region", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss visual OCR region failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossVisualOCRRegionResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "visual_ocr_region"
+	}
+	return &out, nil
 }
 
 func runBossBrowserAgentSendMessage(payload bossChatMessagePayload) (*BossChatMessageResult, error) {
@@ -505,6 +767,44 @@ func runBossBrowserAgentChats(limit int, incremental bool) (*BossChatsResult, er
 	}
 	if strings.TrimSpace(out.Message) == "" {
 		out.Message = "BOSS chats read"
+	}
+	return &out, nil
+}
+
+func runBossDesktopScan(payload BossDesktopScanInput) (*BossDesktopScanResult, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RECRUITMENT_AGENT_URL")), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("recruitment agent url is not configured")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(45+payload.Count*20)*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/boss/desktop/scan", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boss desktop OCR scan failed: %s", strings.TrimSpace(string(body)))
+	}
+	var out BossDesktopScanResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Message) == "" {
+		out.Message = "BOSS desktop OCR scan completed"
 	}
 	return &out, nil
 }

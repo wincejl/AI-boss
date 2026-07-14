@@ -72,6 +72,52 @@ func (b *BossAssistantController) SaveConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+func (b *BossAssistantController) ProbeVisual(c *gin.Context) {
+	if !requirePermission(c, b.users, string(service.PermRecruitment)) {
+		return
+	}
+	result, err := b.service.ProbeVisual()
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (b *BossAssistantController) ProbeVisualRegion(c *gin.Context) {
+	if !requirePermission(c, b.users, string(service.PermRecruitment)) {
+		return
+	}
+	var req service.BossVisualRegionProbeInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	result, err := b.service.ProbeVisualRegion(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (b *BossAssistantController) ProbeVisualOCRRegion(c *gin.Context) {
+	if !requirePermission(c, b.users, string(service.PermRecruitment)) {
+		return
+	}
+	var req service.BossVisualOCRRegionInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	result, err := b.service.ProbeVisualOCRRegion(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func (b *BossAssistantController) ClickMenu(c *gin.Context) {
 	if !requirePermission(c, b.users, string(service.PermRecruitment)) {
 		return
@@ -164,6 +210,86 @@ func (b *BossAssistantController) ImportCandidates(c *gin.Context) {
 		"skipped":    skipped,
 		"rescored":   rescored,
 		"message":    result.Message,
+	})
+}
+
+func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
+	if !requirePermission(c, b.users, string(service.PermChat)) {
+		return
+	}
+	if b.service == nil || b.conversation == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "boss desktop OCR import service is not configured"})
+		return
+	}
+	var req struct {
+		Count int  `json:"count"`
+		Draft bool `json:"draft"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if req.Count <= 0 {
+		req.Count = 1
+	}
+	if req.Count > 10 {
+		req.Count = 10
+	}
+	result, err := b.service.ScanDesktopOCRChats(req.Count)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	items := make([]service.ImportBossChatInput, 0, len(result.OCRResults))
+	seen := map[string]struct{}{}
+	skipped := 0
+	for index, ocr := range result.OCRResults {
+		text := strings.TrimSpace(ocr.Text)
+		key := desktopOCRProfileKey(text)
+		if !ocr.OK || key == "" {
+			skipped++
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			skipped++
+			continue
+		}
+		seen[key] = struct{}{}
+		name := desktopOCRConversationName(index+1, text)
+		lastMessage := desktopOCRLatestMessage(text)
+		items = append(items, service.ImportBossChatInput{
+			Key:         desktopOCRChatKey(name, text, index+1),
+			Name:        name,
+			Role:        "BOSS Desktop OCR",
+			LastMessage: lastMessage,
+			LastSender:  "visitor",
+			TimeText:    "Desktop OCR",
+			Profile:     text,
+		})
+	}
+
+	ownerID := getUserIDFromHeader(c)
+	imported, err := b.conversation.ImportBossChats(items, ownerID, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Draft {
+		b.draftReplyBossChats(imported, ownerID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"conversations":   imported.Conversations,
+		"imported":        imported.Imported,
+		"updated":         imported.Updated,
+		"closed":          imported.Closed,
+		"skipped":         skipped + imported.Skipped,
+		"scan":            result,
+		"deleted_images":  result.DeletedImages,
+		"image_retention": result.ImageRetention,
+		"requires_review": true,
+		"message":         "BOSS desktop OCR results imported into dashboard conversations; screenshots were deleted and no message was sent",
 	})
 }
 
@@ -434,11 +560,11 @@ func bossAutoSyncEnabled() bool {
 func bossAutoSyncInterval() time.Duration {
 	value := strings.TrimSpace(os.Getenv("BOSS_AUTO_SYNC_INTERVAL_SECONDS"))
 	if value == "" {
-		return 5 * time.Second
+		return 60 * time.Second
 	}
 	seconds, err := strconv.Atoi(value)
-	if err != nil || seconds < 3 {
-		return 5 * time.Second
+	if err != nil || seconds < 30 {
+		return 60 * time.Second
 	}
 	return time.Duration(seconds) * time.Second
 }
@@ -455,6 +581,70 @@ func bossCandidateKey(name string, role string, location string, profile string)
 		profile = profile[:80]
 	}
 	return strings.Join([]string{name, role, location, profile}, "|")
+}
+
+func desktopOCRConversationName(index int, profile string) string {
+	if index <= 0 {
+		index = 1
+	}
+	for _, line := range desktopOCRUsefulLines(profile, 6) {
+		if len([]rune(line)) <= 32 {
+			return line
+		}
+	}
+	return "BOSS Desktop OCR #" + strconv.Itoa(index)
+}
+
+func desktopOCRChatKey(name string, profile string, index int) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name != "" && !strings.HasPrefix(name, "boss desktop ocr #") {
+		return "boss-desktop-ocr:name:" + name
+	}
+	if key := desktopOCRProfileKey(profile); key != "" {
+		return "boss-desktop-ocr:text:" + key
+	}
+	return "boss-desktop-ocr:index:" + strconv.Itoa(index)
+}
+
+func desktopOCRProfileKey(profile string) string {
+	value := strings.ToLower(strings.TrimSpace(profile))
+	if value == "" {
+		return ""
+	}
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 180 {
+		value = value[:180]
+	}
+	return value
+}
+
+func desktopOCRLatestMessage(profile string) string {
+	useful := desktopOCRUsefulLines(profile, 8)
+	out := strings.Join(useful, "\n")
+	if len(out) > 1200 {
+		out = out[:1200]
+	}
+	return out
+}
+
+func desktopOCRUsefulLines(profile string, limit int) []string {
+	lines := strings.Split(profile, "\n")
+	useful := []string{}
+	ignored := map[string]bool{
+		"同意": true, "拒绝": true, "求简历": true, "换电话": true, "换微信": true, "我知道了": true, "已读": true,
+		"沟通": true, "职位": true, "简历": true, "常用语": true, "表情": true, "发送": true,
+	}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || ignored[line] || strings.HasPrefix(line, "<div") || strings.HasPrefix(line, "http") {
+			continue
+		}
+		useful = append(useful, line)
+	}
+	if limit > 0 && len(useful) > limit {
+		useful = useful[len(useful)-limit:]
+	}
+	return useful
 }
 
 func defaultString(value string, fallback string) string {
