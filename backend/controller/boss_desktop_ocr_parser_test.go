@@ -57,6 +57,25 @@ func TestDesktopOCRParseChatSkipsLegalNoise(t *testing.T) {
 	}
 }
 
+func TestDesktopOCRParseChatSkipsUnselectedContactTable(t *testing.T) {
+	text := strings.Join([]string{
+		"<table><tr><td>\u7ea6\u9762</td><td>\u66f4\u591a</td></tr><tr><td colspan=\"2\">\u6279\u91cf</td></tr><tr><td colspan=\"2\">07\u670815\u65e5</td></tr><tr><td colspan=\"2\">\u804c\u4f4d\u6211\u5f88\u6709\u5174\u8da3\uff0c\u5e0c...</td></tr></table>",
+		"\u672a\u9009\u4e2d\u8054\u7cfb\u4eba",
+		"\u5217\u8868\u53ea\u5c55\u793a\u8fd130\u5929\u7684\u8054\u7cfb\u4eba",
+	}, "\n")
+
+	got := desktopOCRParseChat(1, text, nil)
+	if got.Importable {
+		t.Fatalf("expected unselected contact/list OCR to be skipped: %+v", got)
+	}
+	if len(got.Messages) != 0 {
+		t.Fatalf("page/list OCR should not create review messages: %+v", got.Messages)
+	}
+	if len(got.Warnings) == 0 {
+		t.Fatalf("expected a warning for skipped OCR, got none")
+	}
+}
+
 func TestDesktopOCRParseChatKeepsMessagesMentioningToday(t *testing.T) {
 	text := strings.Join([]string{
 		"\u674e\u56db",

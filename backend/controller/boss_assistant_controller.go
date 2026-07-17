@@ -687,12 +687,7 @@ func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopO
 			parsed.Confidence = "high"
 		}
 	} else {
-		parsed.LastMessage = desktopOCRLatestMessage(strings.Join(lines, "\n"))
-		if parsed.LastMessage != "" {
-			parsed.LastMessage = "[OCR review] " + parsed.LastMessage
-			parsed.Messages = []service.BossChatHistoryMessage{{Sender: "candidate", Content: parsed.LastMessage}}
-			parsed.Warnings = append(parsed.Warnings, "OCR text did not contain clear chat bubbles; imported as one review message")
-		}
+		parsed.Warnings = append(parsed.Warnings, "OCR text did not contain clear chat bubbles; skipped to avoid importing page noise")
 	}
 
 	profile := strings.TrimSpace(strings.Join(profileLines, "\n"))
@@ -1034,10 +1029,7 @@ func desktopOCRParsedChatImportable(parsed desktopOCRParsedChat) bool {
 	if len(parsed.Messages) > 0 {
 		return true
 	}
-	if !strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
-		return true
-	}
-	return desktopOCRLooksLikeRoleLine(parsed.Role)
+	return false
 }
 
 func desktopOCRConversationName(index int, profile string) string {
@@ -1263,7 +1255,14 @@ func desktopOCRIsControlLine(line string) bool {
 
 func desktopOCRIsStrictNoiseLine(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
-	if lower == "" || strings.HasPrefix(lower, "http") || strings.Contains(lower, "<div") || strings.Contains(lower, "<img") || strings.Contains(lower, "![") {
+	if lower == "" ||
+		strings.HasPrefix(lower, "http") ||
+		strings.Contains(lower, "<div") ||
+		strings.Contains(lower, "<img") ||
+		strings.Contains(lower, "<table") ||
+		strings.Contains(lower, "<tr") ||
+		strings.Contains(lower, "<td") ||
+		strings.Contains(lower, "![") {
 		return true
 	}
 	if desktopOCRIsTimeOrStatusLine(line) {
@@ -1317,7 +1316,13 @@ func desktopOCRUsefulLines(profile string, limit int) []string {
 
 func desktopOCRIsNoiseLine(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
-	if lower == "" || strings.HasPrefix(lower, "http") || strings.Contains(lower, "<div") || strings.Contains(lower, "<img") {
+	if lower == "" ||
+		strings.HasPrefix(lower, "http") ||
+		strings.Contains(lower, "<div") ||
+		strings.Contains(lower, "<img") ||
+		strings.Contains(lower, "<table") ||
+		strings.Contains(lower, "<tr") ||
+		strings.Contains(lower, "<td") {
 		return true
 	}
 	noiseSubstrings := []string{
