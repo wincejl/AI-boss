@@ -83,9 +83,10 @@ const EDUCATION_LEVELS = ["初中及以下", "中专/中技", "高中", "大专"
 const AGE_OPTIONS = ["不限", "20-25", "25-30", "30-35", "35-40", "40-50", "50以上", "自定义"];
 const SORT_OPTIONS = ["综合排序", "活跃优先", "匹配度优先"];
 const CANDIDATE_BATCH_OPTIONS = [5, 10, 20, 30, 50];
-const MUST_HAVE_SUGGESTIONS = ["3年以上相关经验", "熟悉供应链流程", "本科及以上", "能接受通勤", "沟通稳定"];
-const NICE_HAVE_SUGGESTIONS = ["采购师证书", "PMP", "SAP/ERP经验", "英语沟通", "制造业经验", "带团队经验"];
-const EXCLUSION_SUGGESTIONS = ["应届生", "频繁跳槽", "暂不考虑机会", "不接受通勤", "薪资明显不符"];
+const REQUIREMENT_RULE_TYPES = [
+  { value: "bonus", label: "加分项" },
+  { value: "exclusion", label: "排除项" },
+] as const;
 const RECOMMENDED_FILTER_FIELDS = [
   { key: "school", label: "院校要求", options: ["不限", "统招本科", "双一流院校", "211院校", "985院校", "留学生"] },
   { key: "experience", label: "经验要求", options: ["不限", "在校/应届", "25年毕业", "26年毕业", "26年后毕业", "1-3年", "3-5年", "5-10年"] },
@@ -248,11 +249,9 @@ const STAGE_ACTIONS: Array<{ label: string; patch: UpdateCandidatePayload }> = [
   },
 ];
 
-type RequirementForm = CreateRequirementPayload & {
-  exclusions: string;
-};
+type RequirementRuleType = (typeof REQUIREMENT_RULE_TYPES)[number]["value"];
 
-const emptyRequirement: RequirementForm = {
+const emptyRequirement: CreateRequirementPayload = {
   title: "",
   role: "",
   job_category: "不限职位",
@@ -268,7 +267,6 @@ const emptyRequirement: RequirementForm = {
   tags: "",
   must_have: "",
   nice_have: "",
-  exclusions: "",
   description: "",
   status: "active",
 };
@@ -352,71 +350,51 @@ function buildBossSearchKeyword(form: Pick<CreateRequirementPayload, "job_catego
   return form.search_keyword.trim() || category;
 }
 
-function splitRequirementItems(value: string): string[] {
-  return value
-    .split(/[\n,，;；、]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
+function appendRuleToDescription(description: string, type: RequirementRuleType, value: string): string {
+  const item = value.trim();
+  if (!item) return description;
 
-function stripRequirementSections(value: string): string {
-  const lines = value.split(/\r?\n/);
-  const body: string[] = [];
-  let inStructuredSection = false;
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    const heading = line.replace(/^[#\s【[]+|[\]】\s:：]+$/g, "");
-    if (["岗位描述", "职位描述", "需求描述", "描述"].includes(heading)) {
-      inStructuredSection = false;
-      continue;
-    }
-    if (["重点要求", "必备要求", "核心要求", "加分项", "排除项"].includes(heading)) {
-      inStructuredSection = true;
-      continue;
-    }
-    if (!inStructuredSection) {
-      body.push(rawLine);
+  const title = type === "bonus" ? "加分项" : "排除项";
+  const heading = `【${title}】`;
+  const lines = description.trimEnd().split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => line.trim() === heading);
+
+  if (headingIndex < 0) {
+    return [description.trimEnd(), "", heading, `- ${item}`].filter((part, index) => index > 0 || part).join("\n");
+  }
+
+  let insertAt = lines.length;
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    if (/^【.+】$/.test(lines[index].trim())) {
+      insertAt = index;
+      break;
     }
   }
-  return body.join("\n").trim();
+
+  const existing = lines
+    .slice(headingIndex + 1, insertAt)
+    .map((line) => line.trim().replace(/^[-*•]\s*/, ""))
+    .filter(Boolean);
+  if (existing.includes(item)) return description;
+
+  const nextLines = [...lines];
+  nextLines.splice(insertAt, 0, `- ${item}`);
+  return nextLines.join("\n").trimStart();
 }
 
-function formatRequirementSection(title: string, items: string[]): string {
-  if (items.length === 0) return "";
-  return [`【${title}】`, ...items.map((item) => `- ${item}`)].join("\n");
-}
-
-function buildStructuredDescription(form: RequirementForm): string {
-  const body = stripRequirementSections(form.description);
-  const blocks = [
-    body ? `岗位描述：\n${body}` : "",
-    formatRequirementSection("重点要求", splitRequirementItems(form.must_have)),
-    formatRequirementSection("加分项", splitRequirementItems(form.nice_have)),
-    formatRequirementSection("排除项", splitRequirementItems(form.exclusions)),
-  ].filter(Boolean);
-  return blocks.join("\n\n");
-}
-
-function appendRequirementItem(value: string, item: string): string {
-  const items = splitRequirementItems(value);
-  if (items.some((existing) => existing === item)) return value;
-  return [...items, item].join("\n");
-}
-
-function buildRequirementPayload(form: RequirementForm): CreateRequirementPayload {
+function buildRequirementPayload(form: CreateRequirementPayload): CreateRequirementPayload {
   const role = buildRequirementRole(form);
   const location = form.location.trim();
   const searchKeyword = buildBossSearchKeyword(form);
-  const { exclusions: _exclusions, ...payloadBase } = form;
   return {
-    ...payloadBase,
+    ...form,
     title: form.title.trim() || [location, role].filter(Boolean).join(" ") || role,
     role,
     search_keyword: searchKeyword,
     tags: "",
     must_have: "",
     nice_have: "",
-    description: buildStructuredDescription(form),
+    description: form.description.trim(),
   };
 }
 
@@ -489,7 +467,9 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
   const [requirements, setRequirements] = useState<RecruitmentRequirement[]>([]);
   const [candidates, setCandidates] = useState<RecruitmentCandidate[]>([]);
   const [selectedRequirementId, setSelectedRequirementId] = useState<number | null>(null);
-  const [requirementForm, setRequirementForm] = useState<RequirementForm>(emptyRequirement);
+  const [requirementForm, setRequirementForm] = useState<CreateRequirementPayload>(emptyRequirement);
+  const [requirementRuleType, setRequirementRuleType] = useState<RequirementRuleType>("bonus");
+  const [requirementRuleText, setRequirementRuleText] = useState("");
   const [candidateForm, setCandidateForm] = useState<Omit<CreateCandidatePayload, "requirement_id">>(emptyCandidate);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [agentResults, setAgentResults] = useState<Record<number, RecruitmentAgentResult>>({});
@@ -1268,91 +1248,52 @@ export default function RecruitmentPage({ embedded = false }: { embedded?: boole
                   <Label htmlFor="requirement-description">岗位描述</Label>
                   <Textarea
                     id="requirement-description"
-                    className="min-h-24"
+                    className="min-h-32"
                     value={requirementForm.description}
                     onChange={(event) => setRequirementForm((prev) => ({ ...prev, description: event.target.value }))}
-                    placeholder="写岗位职责、业务场景和沟通重点。保存时会和下方标签一起写入固定格式描述。"
+                    placeholder="写岗位职责、业务场景和沟通重点。下面添加的加分项/排除项会直接写到这里。"
                   />
                 </div>
-                <div className="grid gap-3 lg:grid-cols-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="requirement-must-have">重点要求</Label>
-                    <Textarea
-                      id="requirement-must-have"
-                      className="min-h-20"
-                      value={requirementForm.must_have}
-                      onChange={(event) => setRequirementForm((prev) => ({ ...prev, must_have: event.target.value }))}
-                      placeholder="每行一个要求；未提及只标记待确认。"
-                    />
-                    <div className="flex flex-wrap gap-1.5">
-                      {MUST_HAVE_SUGGESTIONS.map((item) => (
-                        <Button
-                          key={item}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() =>
-                            setRequirementForm((prev) => ({ ...prev, must_have: appendRequirementItem(prev.must_have, item) }))
-                          }
-                        >
-                          {item}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="requirement-nice-have">加分项</Label>
-                    <Textarea
-                      id="requirement-nice-have"
-                      className="min-h-20"
-                      value={requirementForm.nice_have}
-                      onChange={(event) => setRequirementForm((prev) => ({ ...prev, nice_have: event.target.value }))}
-                      placeholder="每行一个加分项；命中加分，没提到不扣分。"
-                    />
-                    <div className="flex flex-wrap gap-1.5">
-                      {NICE_HAVE_SUGGESTIONS.map((item) => (
-                        <Button
-                          key={item}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() =>
-                            setRequirementForm((prev) => ({ ...prev, nice_have: appendRequirementItem(prev.nice_have, item) }))
-                          }
-                        >
-                          {item}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="requirement-exclusions">排除项</Label>
-                    <Textarea
-                      id="requirement-exclusions"
-                      className="min-h-20"
-                      value={requirementForm.exclusions}
-                      onChange={(event) => setRequirementForm((prev) => ({ ...prev, exclusions: event.target.value }))}
-                      placeholder="每行一个明确不考虑项；命中后标记风险并压低分数。"
-                    />
-                    <div className="flex flex-wrap gap-1.5">
-                      {EXCLUSION_SUGGESTIONS.map((item) => (
-                        <Button
-                          key={item}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() =>
-                            setRequirementForm((prev) => ({ ...prev, exclusions: appendRequirementItem(prev.exclusions, item) }))
-                          }
-                        >
-                          {item}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
+                <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={requirementRuleType}
+                    onChange={(event) => setRequirementRuleType(event.target.value as RequirementRuleType)}
+                  >
+                    {REQUIREMENT_RULE_TYPES.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    value={requirementRuleText}
+                    onChange={(event) => setRequirementRuleText(event.target.value)}
+                    placeholder="输入条件，如：采购师证书、应届生、频繁跳槽"
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      setRequirementForm((prev) => ({
+                        ...prev,
+                        description: appendRuleToDescription(prev.description, requirementRuleType, requirementRuleText),
+                      }));
+                      setRequirementRuleText("");
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setRequirementForm((prev) => ({
+                        ...prev,
+                        description: appendRuleToDescription(prev.description, requirementRuleType, requirementRuleText),
+                      }));
+                      setRequirementRuleText("");
+                    }}
+                    disabled={!requirementRuleText.trim()}
+                  >
+                    添加
+                  </Button>
                 </div>
                 <div className="grid gap-2 text-sm sm:grid-cols-2">
                   <label className="flex items-center gap-2 rounded-md border bg-background px-3 py-2">
