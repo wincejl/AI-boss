@@ -160,6 +160,57 @@ func TestDesktopOCRParseChatUsesPaddleBlocksForBasics(t *testing.T) {
 	}
 }
 
+func TestDesktopOCRParseChatFiltersSelectedContactControls(t *testing.T) {
+	text := strings.Join([]string{
+		"\u7ea6\u9762 \u66f4\u591a",
+		"07\u670815\u65e5",
+		"\u804c\u4f4d\u6211\u5f88\u6709\u5174\u8da3\uff0c\u5e0c...",
+		"\u662f\u5426\u540c\u610f",
+		"\u540e\u9762\u505a\u8de8\u5883\u7535\u5546\u4f9b\u5e94\u94fe...",
+		"## \u5434\u5148\u751f \u521a\u521a\u6d3b\u8dc3",
+		"22\u5c81 | 1\u5e74\u4ee5\u5185 | \u672c\u79d1",
+		"\u5728\u7ebf\u7b80\u5386",
+		"\u9644\u4ef6\u7b80\u5386",
+		"2025.12-2026.06 \u5e7f\u5dde\u76d6\u7279\u8f6f\u4ef6\u516c\u53f8\u00b7\u6d4b\u8bd5\u5de5\u7a0b\u5e08\u6c9f\u901a\u804c\u4f4d\uff1a\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406",
+		"2022-2026 \u5e7f\u5dde\u57ce\u5e02\u7406\u5de5\u5927\u5b66\u00b7\u8f6f\u4ef6\u5de5\u7a0b\u2026",
+		"\u671f\u671b\uff1a\u53a6\u95e8\u00b7\u91c7\u8d2d\u4e13\u5458/\u52a9\u7406 5-8K",
+		"07-15 10:53",
+		"7\u670815\u65e5 \u6c9f\u901a\u7684\u804c\u4f4d-\u4f9b\u5e94\u94fe\n\u91c7\u8d2d\u7ecf\u7406",
+		"\u60a8\u597d\uff0c\u53ef\u4ee5\u804a\u804a\u5417\uff1f\u60a8\u8fd9\u4e2a\u804c\u4f4d\u6211\u5f88\u6709\u5174\u8da3\uff0c\u5e0c\u671b\u8fdb\u4e00\u6b65\u4e86\u89e3",
+		"\u4e0d\u5408\u9002",
+	}, "\n")
+
+	got := desktopOCRParseChat(1, text, nil)
+	if got.Name != "\u5434\u5148\u751f" {
+		t.Fatalf("expected active contact name, got %q", got.Name)
+	}
+	if got.Role != "\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406" {
+		t.Fatalf("expected joined role, got %q", got.Role)
+	}
+	if got.Age != "22岁" || got.Experience != "1年以内" || got.Education != "本科" {
+		t.Fatalf("expected compact basics, got age=%q experience=%q education=%q", got.Age, got.Experience, got.Education)
+	}
+	if got.School != "广州城市理工大学" {
+		t.Fatalf("expected school from education line, got %q", got.School)
+	}
+	if got.CurrentCompany != "广州盖特软件公司" || got.CurrentTitle != "测试工程师" {
+		t.Fatalf("expected cleaned current work, got company=%q title=%q", got.CurrentCompany, got.CurrentTitle)
+	}
+	if len(got.Messages) != 1 {
+		t.Fatalf("expected one real chat message, got %+v", got.Messages)
+	}
+	if strings.Contains(got.Profile, "\u5728\u7ebf\u7b80\u5386") ||
+		strings.Contains(got.Profile, "\u662f\u5426\u540c\u610f") ||
+		strings.Contains(got.Profile, "...") ||
+		strings.Contains(got.Profile, "07月15日") ||
+		strings.Contains(got.Profile, "沟通职位：") ||
+		strings.Contains(got.Profile, "刚刚活跃") ||
+		strings.Contains(got.Profile, "22岁 | 1年以内 | 本科") ||
+		strings.Contains(got.Profile, "\n采购经理\n") {
+		t.Fatalf("profile should not include controls: %q", got.Profile)
+	}
+}
+
 func TestDesktopOCRTextFromBlocksSortsByLayoutAndKeepsRawFallback(t *testing.T) {
 	boxes := []map[string]any{
 		{"type": "paddle_block", "bbox": []any{700, 300, 900, 330}, "text": "\u4f60\u597d\u554a\uff0c\u53ef\u4ee5\u804a\u4e00\u804a~"},

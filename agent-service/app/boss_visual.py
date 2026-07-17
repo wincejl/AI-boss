@@ -232,7 +232,7 @@ def capture_boss_window() -> dict[str, Any]:
     return payload
 
 
-def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
+def scan_boss_chats(count: int, run_ocr: bool = False, select_first: bool = False) -> dict[str, Any]:
     if not env_enabled("BOSS_VISUAL_SCREENSHOT_PROBE"):
         return {
             "ok": False,
@@ -242,7 +242,7 @@ def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
         }
     safe_count = max(1, min(10, int(count)))
     output_dir = desktop_capture_dir("boss-desktop-scans") / f"scan-{timestamp_id()}-{uuid.uuid4().hex[:8]}"
-    if safe_count == 1:
+    if safe_count == 1 and not select_first:
         output_dir.mkdir(parents=True, exist_ok=True)
         result = run_wgc(["--auto-boss", str(output_dir / "boss_1.png")], timeout=60)
     else:
@@ -251,11 +251,15 @@ def scan_boss_chats(count: int, run_ocr: bool = False) -> dict[str, Any]:
                 "ok": False,
                 "mode": "boss_desktop_wgc_scan",
                 "safety": BOSS_DESKTOP_SAFETY,
-                "message": "desktop click scan is disabled; set BOSS_DESKTOP_CLICK_PROBE=true for a supervised batch scan",
+                "message": "desktop click scan is disabled; set BOSS_DESKTOP_CLICK_PROBE=true for a supervised chat-list scan",
             }
         result = run_wgc(["--scan", str(output_dir), str(safe_count)], timeout=30 + safe_count * 15)
     images = sorted(output_dir.glob("*.png")) if output_dir.exists() else []
-    extra: dict[str, Any] = {"requested_count": safe_count, "ocr_requested": run_ocr}
+    extra: dict[str, Any] = {
+        "requested_count": safe_count,
+        "ocr_requested": run_ocr,
+        "select_first": bool(select_first),
+    }
     if run_ocr:
         extra["ocr_results"] = ocr_wgc_chat_images(images)
     payload = wgc_command_result("boss_desktop_wgc_scan", result, images, extra=extra)
@@ -303,7 +307,7 @@ def draft_from_ocr_text(payload) -> dict[str, Any]:
 def scan_and_draft_boss_chats(payload) -> dict[str, Any]:
     from .schemas import BossDesktopDraftFromOCRRequest
 
-    scan = scan_boss_chats(payload.count, run_ocr=True)
+    scan = scan_boss_chats(payload.count, run_ocr=True, select_first=True)
     drafts: list[dict[str, Any]] = []
     for index, item in enumerate(scan.get("ocr_results") or [], start=1):
         text = str(item.get("text") or "").strip() if isinstance(item, dict) else ""

@@ -114,6 +114,7 @@ class BossVisualOCRRegionRequest(BaseModel):
 class BossDesktopScanRequest(BaseModel):
     count: int = Field(default=3, ge=1, le=10)
     ocr: bool = False
+    select_first: bool = False
 
 
 class BossDesktopDraftFromOCRRequest(BaseModel):

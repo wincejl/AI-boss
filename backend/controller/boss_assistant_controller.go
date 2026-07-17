@@ -226,8 +226,9 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Count int  `json:"count"`
-		Draft bool `json:"draft"`
+		Count       int  `json:"count"`
+		Draft       bool `json:"draft"`
+		SelectFirst bool `json:"select_first"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -239,7 +240,7 @@ func (b *BossAssistantController) ImportDesktopOCRChats(c *gin.Context) {
 	if req.Count > 10 {
 		req.Count = 10
 	}
-	result, err := b.service.ScanDesktopOCRChats(req.Count)
+	result, err := b.service.ScanDesktopOCRChats(req.Count, req.SelectFirst)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -616,9 +617,10 @@ type desktopOCRParsedChat struct {
 	Warnings       []string                         `json:"warnings"`
 }
 
-var desktopOCRTimeLinePattern = regexp.MustCompile(`^(\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2})(\s+\d{1,2}:\d{2})?$`)
+var desktopOCRTimeLinePattern = regexp.MustCompile(`^(\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}|\d{1,2}月\d{1,2}日)(\s+\d{1,2}:\d{2})?$`)
 var desktopOCRAgePattern = regexp.MustCompile(`(\d{2})\s*岁`)
 var desktopOCRExperiencePattern = regexp.MustCompile(`(\d{1,2})\s*年\s*(经验|工作经验)`)
+var desktopOCRCompactExperiencePattern = regexp.MustCompile(`(\d{1,2})\s*年\s*(以内|以上)`)
 
 func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopOCRParsedChat {
 	lines := desktopOCRUsefulLines(desktopOCRTextFromBlocks(raw, boxes), 0)
@@ -637,6 +639,12 @@ func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopO
 
 	profileLines := []string{}
 	for pos, line := range lines {
+		if desktopOCRIsControlLine(line) {
+			continue
+		}
+		if desktopOCRIsTruncatedPreviewLine(line) {
+			continue
+		}
 		if parsed.Name == "" || strings.HasPrefix(strings.ToLower(parsed.Name), "boss desktop ocr #") {
 			if pos < 12 && desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeRoleLine(line) && !desktopOCRLooksLikeMessageLine(line) {
 				parsed.Name = line
@@ -644,14 +652,20 @@ func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopO
 			}
 		}
 		if role := desktopOCRRoleFromLine(line); role != "" {
+			if pos+1 < len(lines) {
+				next := strings.TrimSpace(lines[pos+1])
+				if desktopOCRLooksLikeRoleContinuation(next) && !strings.Contains(role, next) {
+					role += next
+				}
+			}
 			if parsed.Role == "BOSS Desktop OCR" || strings.Contains(line, "\u6c9f\u901a\u804c\u4f4d") || strings.Contains(line, "\u6c9f\u901a\u7684\u804c\u4f4d") {
 				parsed.Role = role
 			}
-			profileLines = append(profileLines, line)
+			desktopOCRAppendProfileLine(&profileLines, line)
 			continue
 		}
 		if desktopOCRLooksLikeProfileLine(line) {
-			profileLines = append(profileLines, line)
+			desktopOCRAppendProfileLine(&profileLines, line)
 			continue
 		}
 		if desktopOCRLooksLikeMessageLine(line) {
@@ -662,13 +676,16 @@ func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopO
 			})
 			continue
 		}
+		if parsed.Role != "BOSS Desktop OCR" && desktopOCRLooksLikeRoleContinuation(line) && strings.Contains(parsed.Role, line) {
+			continue
+		}
 		if parsed.Role == "BOSS Desktop OCR" && desktopOCRLooksLikeRoleLine(line) {
 			parsed.Role = desktopOCRCleanRole(line)
-			profileLines = append(profileLines, line)
+			desktopOCRAppendProfileLine(&profileLines, line)
 			continue
 		}
 		if len(profileLines) < 10 {
-			profileLines = append(profileLines, line)
+			desktopOCRAppendProfileLine(&profileLines, line)
 		}
 	}
 
@@ -842,6 +859,12 @@ func absInt(value int) int {
 }
 
 func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []string) {
+	for _, line := range lines {
+		if name := desktopOCRNameFromActivityLine(line); name != "" {
+			parsed.Name = name
+			break
+		}
+	}
 	for index, line := range lines {
 		if index > 12 {
 			break
@@ -860,9 +883,7 @@ func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []stri
 			parsed.Education = desktopOCREducationFromLine(line)
 		}
 		if parsed.Experience == "" {
-			if match := desktopOCRExperiencePattern.FindStringSubmatch(line); len(match) >= 2 {
-				parsed.Experience = match[1] + "\u5e74\u7ecf\u9a8c"
-			}
+			parsed.Experience = desktopOCRExperienceFromLine(line)
 		}
 		if parsed.School == "" {
 			if school := desktopOCRSchoolFromLine(line); school != "" {
@@ -888,8 +909,11 @@ func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []stri
 
 func desktopOCRNameFromBasicLine(line string) string {
 	line = strings.TrimSpace(line)
-	if line == "" || desktopOCRIsNoiseLine(line) {
+	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsControlLine(line) {
 		return ""
+	}
+	if name := desktopOCRNameFromActivityLine(line); name != "" {
+		return name
 	}
 	if desktopOCRLooksLikeMessageLine(line) {
 		return ""
@@ -904,6 +928,22 @@ func desktopOCRNameFromBasicLine(line string) string {
 	}
 	if desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeMessageLine(line) && !desktopOCRLooksLikeProfileLine(line) {
 		return line
+	}
+	return ""
+}
+
+func desktopOCRNameFromActivityLine(line string) string {
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "##"))
+	if line == "" {
+		return ""
+	}
+	for _, marker := range []string{"刚刚活跃", "最后活跃", "今日活跃", "活跃"} {
+		if before, _, ok := strings.Cut(line, marker); ok {
+			name := strings.TrimSpace(before)
+			if desktopOCRLooksLikeCandidateName(name) {
+				return name
+			}
+		}
 	}
 	return ""
 }
@@ -938,13 +978,14 @@ func desktopOCRWorkFromLine(line string) string {
 	if !desktopOCRLooksLikeWorkHistoryLine(line) {
 		return ""
 	}
-	return strings.TrimSpace(line)
+	return desktopOCRCleanWorkHistoryLine(line)
 }
 
 func desktopOCRCompanyTitleFromLine(line string) (string, string) {
 	if !desktopOCRLooksLikeWorkHistoryLine(line) {
 		return "", ""
 	}
+	line = desktopOCRCleanWorkHistoryLine(line)
 	_, parts := desktopOCRDatedLineParts(line)
 	if len(parts) == 0 {
 		return "", ""
@@ -953,8 +994,90 @@ func desktopOCRCompanyTitleFromLine(line string) (string, string) {
 	title := ""
 	if len(parts) > 1 {
 		title = parts[len(parts)-1]
+		for _, marker := range []string{"\u6c9f\u901a\u804c\u4f4d", "\u6c9f\u901a\u7684\u804c\u4f4d"} {
+			if before, _, ok := strings.Cut(title, marker); ok {
+				title = strings.TrimSpace(before)
+				break
+			}
+		}
 	}
 	return company, title
+}
+
+func desktopOCRExperienceFromLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRLooksLikeExperienceLine(line) {
+		return ""
+	}
+	if match := desktopOCRExperiencePattern.FindStringSubmatch(line); len(match) >= 2 {
+		return match[1] + "\u5e74\u7ecf\u9a8c"
+	}
+	if match := desktopOCRCompactExperiencePattern.FindStringSubmatch(line); len(match) >= 3 {
+		return match[1] + "\u5e74" + match[2]
+	}
+	return ""
+}
+
+func desktopOCRAppendProfileLine(lines *[]string, line string) {
+	line = desktopOCRProfileLineForImport(line)
+	if line == "" {
+		return
+	}
+	for _, existing := range *lines {
+		if strings.EqualFold(strings.Join(strings.Fields(existing), " "), strings.Join(strings.Fields(line), " ")) {
+			return
+		}
+	}
+	*lines = append(*lines, line)
+}
+
+func desktopOCRProfileLineForImport(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsTimeOrStatusLine(line) || desktopOCRIsDatedCommunicationRoleLine(line) {
+		return ""
+	}
+	if desktopOCRNameFromActivityLine(line) != "" || desktopOCRLooksLikeCompactBasicsLine(line) {
+		return ""
+	}
+	if desktopOCRLooksLikeWorkHistoryLine(line) {
+		return desktopOCRCleanWorkHistoryLine(line)
+	}
+	return strings.TrimSpace(strings.TrimRight(line, "…"))
+}
+
+func desktopOCRLooksLikeCompactBasicsLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if !strings.Contains(line, "|") {
+		return false
+	}
+	hasAge := desktopOCRAgePattern.MatchString(line)
+	hasEducation := desktopOCREducationFromLine(line) != ""
+	hasExperience := desktopOCRExperienceFromLine(line) != ""
+	return hasAge && (hasEducation || hasExperience)
+}
+
+func desktopOCRIsDatedCommunicationRoleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if !desktopOCRContainsAny(line, []string{"沟通职位", "沟通的职位"}) {
+		return false
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	first := fields[0]
+	return desktopOCRTimeLinePattern.MatchString(first) || regexp.MustCompile(`^\d{1,2}月\d{1,2}日$`).MatchString(first)
+}
+
+func desktopOCRCleanWorkHistoryLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, marker := range []string{"沟通职位：", "沟通职位:", "沟通的职位：", "沟通的职位:", "沟通的职位-"} {
+		if before, _, ok := strings.Cut(line, marker); ok {
+			line = strings.TrimSpace(before)
+			break
+		}
+	}
+	return strings.TrimSpace(strings.TrimRight(line, " -:：…"))
 }
 
 func desktopOCRLooksLikeEducationHistoryLine(line string) bool {
@@ -1095,6 +1218,19 @@ func desktopOCRLooksLikeRoleLine(line string) bool {
 	return false
 }
 
+func desktopOCRLooksLikeRoleContinuation(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsControlLine(line) || desktopOCRIsTimeOrStatusLine(line) {
+		return false
+	}
+	if len([]rune(line)) > 10 {
+		return false
+	}
+	return desktopOCRContainsAny(line, []string{
+		"\u91c7\u8d2d", "\u7ecf\u7406", "\u4e3b\u7ba1", "\u4e13\u5458", "\u52a9\u7406", "\u5de5\u7a0b\u5e08", "\u8fd0\u8425",
+	})
+}
+
 func desktopOCRRoleFromLine(line string) string {
 	line = strings.TrimSpace(line)
 	if line == "" || desktopOCRIsNoiseLine(line) {
@@ -1178,6 +1314,9 @@ func desktopOCRLooksLikeMessageLine(line string) bool {
 	if line == "" || desktopOCRIsNoiseLine(line) || desktopOCRIsTimeOrStatusLine(line) || desktopOCRIsControlLine(line) || desktopOCRLooksLikeProfileLine(line) {
 		return false
 	}
+	if desktopOCRIsTruncatedPreviewLine(line) {
+		return false
+	}
 	runes := []rune(line)
 	if len(runes) < 3 || len(runes) > 260 {
 		return false
@@ -1190,6 +1329,10 @@ func desktopOCRLooksLikeMessageLine(line string) bool {
 		return true
 	}
 	return len(runes) >= 8 && !desktopOCRLooksLikeStrictCandidateName(line) && !desktopOCRLooksLikeRoleLine(line)
+}
+
+func desktopOCRIsTruncatedPreviewLine(line string) bool {
+	return strings.Contains(strings.TrimSpace(line), "...")
 }
 
 func desktopOCRGuessSender(line string) string {
@@ -1243,7 +1386,8 @@ func desktopOCRIsControlLine(line string) bool {
 	controls := []string{
 		"\u540c\u610f", "\u62d2\u7edd", "\u6c42\u7b80\u5386", "\u6362\u7535\u8bdd", "\u6362\u5fae\u4fe1", "\u6211\u77e5\u9053\u4e86",
 		"\u804c\u4f4d", "\u7b80\u5386", "\u5e38\u7528\u8bed", "\u8868\u60c5", "\u53d1\u9001", "\u66f4\u591a", "\u5907\u6ce8",
-		"\u4e3e\u62a5", "\u62c9\u9ed1",
+		"\u4e3e\u62a5", "\u62c9\u9ed1", "\u5728\u7ebf\u7b80\u5386", "\u9644\u4ef6\u7b80\u5386", "\u4e0d\u5408\u9002", "\u7ea6\u9762 \u66f4\u591a", "\u6279\u91cf",
+		"\u662f\u5426\u540c\u610f",
 	}
 	for _, item := range controls {
 		if line == item {

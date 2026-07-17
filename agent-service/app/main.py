@@ -80,7 +80,7 @@ def boss_desktop_capture():
 @app.post("/v1/boss/desktop/scan")
 def boss_desktop_scan(payload: BossDesktopScanRequest):
     try:
-        return scan_boss_chats(payload.count, payload.ocr)
+        return scan_boss_chats(payload.count, payload.ocr, select_first=payload.select_first)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

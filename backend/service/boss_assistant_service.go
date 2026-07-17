@@ -135,8 +135,9 @@ type BossVisualOCRRegionResult struct {
 }
 
 type BossDesktopScanInput struct {
-	Count int  `json:"count"`
-	OCR   bool `json:"ocr"`
+	Count       int  `json:"count"`
+	OCR         bool `json:"ocr"`
+	SelectFirst bool `json:"select_first"`
 }
 
 type BossDesktopDeletedImage struct {
@@ -163,6 +164,7 @@ type BossDesktopScanResult struct {
 	ReturnCode     int                       `json:"return_code"`
 	RequestedCount int                       `json:"requested_count"`
 	OCRRequested   bool                      `json:"ocr_requested"`
+	SelectFirst    bool                      `json:"select_first"`
 	OCRResults     []BossDesktopOCRResult    `json:"ocr_results,omitempty"`
 	DeletedImages  []BossDesktopDeletedImage `json:"deleted_images,omitempty"`
 	ImageRetention bool                      `json:"image_retention"`
@@ -397,7 +399,7 @@ func (s *BossAssistantService) ReadChats(limit int, incremental bool) (*BossChat
 	return runBossBrowserAgentChats(normalizeBossCandidateLimit(limit), incremental)
 }
 
-func (s *BossAssistantService) ScanDesktopOCRChats(count int) (*BossDesktopScanResult, error) {
+func (s *BossAssistantService) ScanDesktopOCRChats(count int, selectFirst bool) (*BossDesktopScanResult, error) {
 	if runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("BOSS desktop OCR scan is only available on Windows")
 	}
@@ -407,7 +409,7 @@ func (s *BossAssistantService) ScanDesktopOCRChats(count int) (*BossDesktopScanR
 	if count > 10 {
 		count = 10
 	}
-	return runBossDesktopScan(BossDesktopScanInput{Count: count, OCR: true})
+	return runBossDesktopScan(BossDesktopScanInput{Count: count, OCR: true, SelectFirst: selectFirst})
 }
 
 func (s *BossAssistantService) SendChatMessage(input BossChatMessageInput) (*BossChatMessageResult, error) {

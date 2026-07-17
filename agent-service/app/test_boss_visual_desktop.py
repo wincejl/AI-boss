@@ -78,7 +78,7 @@ def test_scan_and_draft_uses_mocked_ocr_text() -> None:
     original_scan = boss_visual.scan_boss_chats
     original_run = recruitment_agent.run_recruitment_agent
     try:
-        boss_visual.scan_boss_chats = lambda count, run_ocr=False: {
+        boss_visual.scan_boss_chats = lambda count, run_ocr=False, select_first=False: {
             "ok": True,
             "mode": "mock_scan",
             "ocr_results": [{"ok": True, "text": "Candidate has purchasing experience."}],

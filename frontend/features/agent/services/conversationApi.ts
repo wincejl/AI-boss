@@ -119,7 +119,7 @@ export async function importBossChats(limit = 50, incremental = false): Promise<
   };
 }
 
-export async function importBossDesktopOCRChats(count = 5, draft = true): Promise<{
+export async function importBossDesktopOCRChats(count = 5, draft = true, selectFirst = false): Promise<{
   conversations: ConversationSummary[];
   imported: number;
   updated: number;
@@ -135,7 +135,7 @@ export async function importBossDesktopOCRChats(count = 5, draft = true): Promis
   const res = await fetch(apiUrl("/agent/boss-assistant/import-desktop-ocr-chats"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...getAgentHeaders() },
-    body: JSON.stringify({ count, draft }),
+    body: JSON.stringify({ count, draft, select_first: selectFirst }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
