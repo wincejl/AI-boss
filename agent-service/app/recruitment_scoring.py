@@ -100,11 +100,18 @@ def score_parsed_match(
 
     exclusion_risks = _score_exclusions(parsed_req, parsed_cand, candidate)
     risks.extend(exclusion_risks)
+
+    must_have_pts, must_have_reasons, must_have_risks = _score_must_have(parsed_req, parsed_cand, candidate)
+    total += must_have_pts
+    reasons.extend(must_have_reasons)
+    risks.extend(must_have_risks)
+
+    bonus_pts, bonus_reasons = _score_bonus_with_points(parsed_req, parsed_cand, requirement, candidate)
+    total += bonus_pts
+    reasons.extend(bonus_reasons)
+
     if exclusion_risks:
         total = min(total, 40)
-
-    bonus_reasons = _score_bonus(parsed_req, parsed_cand, requirement, candidate)
-    reasons.extend(bonus_reasons)
 
     if total > 100:
         total = 100
@@ -325,6 +332,23 @@ def _score_exclusions(
     return risks
 
 
+def _score_must_have(
+    parsed_req: dict[str, Any], parsed_cand: dict[str, Any], candidate: RecruitmentCandidate
+) -> tuple[int, list[str], list[str]]:
+    reasons: list[str] = []
+    risks: list[str] = []
+    haystack = _candidate_haystack(parsed_cand, candidate)
+    score = 0
+    for token in parsed_req.get("must_have", []):
+        if token.lower() in haystack:
+            if score < 12:
+                score += 4
+            reasons.append(f"重点要求匹配：{token}")
+        elif len(risks) < 3:
+            risks.append(f"重点要求待确认：{token}")
+    return min(score, 12), reasons, risks
+
+
 def _score_bonus(
     parsed_req: dict[str, Any],
     parsed_cand: dict[str, Any],
@@ -345,6 +369,27 @@ def _score_bonus(
         elif major_req.get("required"):
             reasons.append(f"专业未匹配：要求{major_req.get('raw')}")
     return reasons
+
+
+def _score_bonus_with_points(
+    parsed_req: dict[str, Any],
+    parsed_cand: dict[str, Any],
+    requirement: RecruitmentRequirement,
+    candidate: RecruitmentCandidate,
+) -> tuple[int, list[str]]:
+    reasons = _score_bonus(parsed_req, parsed_cand, requirement, candidate)
+    haystack = _candidate_haystack(parsed_cand, candidate)
+    score = 0
+    for token in parsed_req.get("bonus", []):
+        if token.lower() in haystack and score < 9:
+            score += 3
+    major_req = parsed_req.get("major", {})
+    major_name = (major_req.get("major") or major_req.get("group") or major_req.get("category") or "").strip()
+    if major_name:
+        candidate_major = (parsed_cand.get("major", {}).get("name") or parsed_cand.get("major", {}).get("raw") or "").strip()
+        if candidate_major and major_name in candidate_major:
+            score += 4
+    return min(score, 10), reasons
 
 
 def _next_action_for_score(score: int, risks: list[str]) -> str:

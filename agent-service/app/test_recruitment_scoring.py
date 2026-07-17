@@ -49,7 +49,42 @@ def test_score_candidate_match_location_mismatch() -> None:
     assert score < 80
 
 
+def test_description_sections_drive_scoring_and_semantic_text() -> None:
+    from app.recruitment_agent import _build_requirement_text, parse_hard_requirements
+
+    requirement = RecruitmentRequirement(
+        role="采购经理",
+        search_keyword="采购经理",
+        description=(
+            "岗位描述：\n负责供应链采购和供应商管理。\n\n"
+            "【重点要求】\n- 供应链流程\n\n"
+            "【加分项】\n- 采购师证书\n\n"
+            "【排除项】\n- 应届生"
+        ),
+    )
+    candidate = RecruitmentCandidate(
+        current_role="采购经理",
+        profile="熟悉供应链流程，持有采购师证书，应届生",
+    )
+
+    parsed = parse_hard_requirements(requirement)
+    score, reason, risks, _ = score_candidate_match(requirement, candidate)
+    semantic_text = _build_requirement_text(requirement)
+
+    assert "供应链流程" in parsed["must_have"]
+    assert "采购师证书" in parsed["bonus"]
+    assert "应届生" in parsed["exclusions"]
+    assert "应届生" in " ".join(risks)
+    assert score <= 40
+    assert "供应链流程" in reason
+    assert "采购师证书" in reason
+    assert "供应链流程" in semantic_text
+    assert "采购师证书" in semantic_text
+    assert "应届生" not in semantic_text
+
+
 if __name__ == "__main__":
     test_score_candidate_match_strong_match()
     test_score_candidate_match_location_mismatch()
+    test_description_sections_drive_scoring_and_semantic_text()
     print("ok")

@@ -99,6 +99,32 @@ func TestScoreRecruitmentCandidateExplicitExclusionStillCaps(t *testing.T) {
 	}
 }
 
+func TestScoreRecruitmentCandidateReadsDescriptionSections(t *testing.T) {
+	req := &models.RecruitmentRequirement{
+		Role:          "采购经理",
+		SearchKeyword: "采购经理",
+		Description:   "岗位描述：\n负责供应链采购、供应商管理和成本控制。\n\n【重点要求】\n- 供应链流程\n\n【加分项】\n- 采购师证书\n\n【排除项】\n- 应届生",
+	}
+	candidate := &models.RecruitmentCandidate{
+		CurrentRole: "采购经理",
+		Profile:     "熟悉供应链流程，持有采购师证书，应届生",
+	}
+
+	result := scoreRecruitmentCandidate(req, candidate)
+	if !strings.Contains(result.Reason, "重点要求匹配：供应链流程") {
+		t.Fatalf("expected must-have from description, got %q", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "加分项命中：采购师证书") {
+		t.Fatalf("expected bonus from description, got %q", result.Reason)
+	}
+	if !strings.Contains(result.RiskFlags, "命中排除项：应届生") {
+		t.Fatalf("expected exclusion from description, got %q", result.RiskFlags)
+	}
+	if result.Score > 40 {
+		t.Fatalf("description exclusion should cap score, got %d", result.Score)
+	}
+}
+
 func TestScoreRecruitmentCandidateLocationMismatch(t *testing.T) {
 	req := &models.RecruitmentRequirement{
 		Role:           "水电工",

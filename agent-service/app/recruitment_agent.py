@@ -233,6 +233,7 @@ EDUCATION_RANKS = ["初中及以下", "中专/中技", "高中", "大专", "本�
 
 def parse_hard_requirements(requirement: RecruitmentRequirement) -> dict[str, Any]:
     filters = parse_filter_pairs(requirement.recommended_filters)
+    description_sections = parse_requirement_description_sections(requirement.description)
     keyword = first_non_empty(
         requirement.search_keyword,
         requirement.role,
@@ -255,8 +256,10 @@ def parse_hard_requirements(requirement: RecruitmentRequirement) -> dict[str, An
         "job_status": filters.get("求职状态", ""),
         "gender": filters.get("性别要求", ""),
         "position": filters.get("职位要求", ""),
-        "bonus": tokens(requirement.nice_have),
-        "exclusions": parse_exclusion_tokens(requirement.must_have),
+        "description_body": description_sections["body"],
+        "must_have": merge_tokens(parse_must_have_tokens(requirement.must_have)[0], description_sections["must_have"]),
+        "bonus": merge_tokens(tokens(requirement.nice_have), description_sections["bonus"]),
+        "exclusions": merge_tokens(parse_must_have_tokens(requirement.must_have)[1], description_sections["exclusions"]),
         "raw_filters": filters,
     }
 
@@ -369,14 +372,86 @@ def parse_major_requirement(raw: str) -> dict[str, Any]:
     }
 
 
-def parse_exclusion_tokens(raw: str) -> list[str]:
+def parse_requirement_description_sections(raw: str) -> dict[str, Any]:
+    sections: dict[str, Any] = {"body": "", "must_have": [], "bonus": [], "exclusions": []}
+    current = "body"
+    body_lines: list[str] = []
+    for raw_line in (raw or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        next_section = description_heading(line)
+        if next_section:
+            current = next_section
+            continue
+        if current == "must":
+            sections["must_have"] = merge_tokens(sections["must_have"], requirement_list_tokens(line))
+        elif current == "bonus":
+            sections["bonus"] = merge_tokens(sections["bonus"], requirement_list_tokens(line))
+        elif current == "exclude":
+            sections["exclusions"] = merge_tokens(sections["exclusions"], requirement_list_tokens(line))
+        else:
+            body_lines.append(line.lstrip("-*• "))
+    sections["body"] = "\n".join(body_lines).strip()
+    return sections
+
+
+def description_heading(line: str) -> str:
+    heading = line.strip().strip("# ：:[]【】")
+    if heading in {"岗位描述", "职位描述", "需求描述", "描述"}:
+        return "body"
+    if heading in {"重点要求", "必备要求", "核心要求", "MustHave"}:
+        return "must"
+    if heading in {"加分项", "加分要求", "NiceHave"}:
+        return "bonus"
+    if heading in {"排除项", "不考虑", "不要", "Exclusions"}:
+        return "exclude"
+    return ""
+
+
+def requirement_list_tokens(raw: str) -> list[str]:
+    cleaned = (raw or "").strip().lstrip("-*• ")
+    return [item.strip().lstrip("-*• ") for item in re.split(r"[,，;；、\n\t]+", cleaned) if item.strip()]
+
+
+def parse_must_have_tokens(raw: str) -> tuple[list[str], list[str]]:
+    must_have: list[str] = []
     exclusions: list[str] = []
+    exclusion_prefixes = ("排除", "排除项", "不要", "不能", "不接受", "不考虑", "拒绝", "禁止")
     for token in tokens(raw):
-        cleaned = re.sub(r"^(排除|不要|不能|不接受|禁止)[:：]?", "", token).strip()
-        has_exclusion_prefix = token.startswith(("排除", "不要", "不能", "不接受", "禁止"))
-        if cleaned and (cleaned != token or has_exclusion_prefix):
+        cleaned = token
+        is_exclusion = False
+        for prefix in exclusion_prefixes:
+            if cleaned.startswith(prefix):
+                is_exclusion = True
+                cleaned = cleaned.removeprefix(prefix)
+                break
+        cleaned = cleaned.strip(":： ")
+        if not cleaned:
+            continue
+        if is_exclusion:
             exclusions.append(cleaned)
-    return exclusions
+        else:
+            must_have.append(cleaned)
+    return merge_tokens(must_have), merge_tokens(exclusions)
+
+
+def parse_exclusion_tokens(raw: str) -> list[str]:
+    return parse_must_have_tokens(raw)[1]
+
+
+def merge_tokens(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for token in group:
+            cleaned = (token or "").strip()
+            key = cleaned.lower()
+            if not cleaned or key in seen:
+                continue
+            seen.add(key)
+            result.append(cleaned)
+    return result
 
 
 def first_non_empty(*values: str) -> str:
@@ -544,11 +619,20 @@ _EMB_MODEL = os.getenv("AGENT_EMBEDDING_MODEL", "text-embedding-3-small").strip(
 
 
 def _build_requirement_text(requirement: RecruitmentRequirement) -> str:
-    parts = [requirement.role, requirement.search_keyword, requirement.description]
-    if requirement.must_have:
-        parts.append(requirement.must_have)
-    if requirement.nice_have:
-        parts.append(requirement.nice_have)
+    sections = parse_requirement_description_sections(requirement.description)
+    must_have, _ = parse_must_have_tokens(requirement.must_have)
+    parts = [
+        requirement.role,
+        requirement.search_keyword,
+        requirement.job_category if "不限" not in requirement.job_category else "",
+        requirement.location,
+        requirement.education_requirement if requirement.education_requirement != "不限" else "",
+        requirement.age_requirement if requirement.age_requirement != "不限" else "",
+        requirement.recommended_filters,
+        sections["body"],
+    ]
+    parts.extend(merge_tokens(must_have, sections["must_have"]))
+    parts.extend(merge_tokens(tokens(requirement.nice_have), sections["bonus"]))
     return " ".join(part for part in parts if part)
 
 

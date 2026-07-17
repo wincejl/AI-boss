@@ -87,9 +87,6 @@ func scoreRecruitmentCandidate(req *models.RecruitmentRequirement, candidate *mo
 
 	exclusionRisks := scoreExclusions(parsedReq, parsedCand, candidate)
 	risks = append(risks, exclusionRisks...)
-	if len(exclusionRisks) > 0 && total > 40 {
-		total = 40
-	}
 
 	mustHavePts, mustHaveReasons, mustHaveRisks := scoreMustHave(parsedReq, parsedCand, candidate)
 	total += mustHavePts
@@ -99,6 +96,10 @@ func scoreRecruitmentCandidate(req *models.RecruitmentRequirement, candidate *mo
 	bonusPts, bonusReasons := scoreBonus(parsedReq, parsedCand, candidate)
 	total += bonusPts
 	reasons = append(reasons, bonusReasons...)
+
+	if len(exclusionRisks) > 0 && total > 40 {
+		total = 40
+	}
 
 	if total > 100 {
 		total = 100
@@ -179,6 +180,7 @@ type parsedMajor struct {
 
 func parseHardRequirements(req *models.RecruitmentRequirement) parsedRequirement {
 	filters := parseFilterPairs(req.RecommendedFilters)
+	descriptionSections := parseRequirementDescriptionSections(req.Description)
 	keyword := firstNonEmpty(
 		req.SearchKeyword,
 		req.Role,
@@ -191,6 +193,8 @@ func parseHardRequirements(req *models.RecruitmentRequirement) parsedRequirement
 	}
 	experienceRaw := firstNonEmpty(filters["经验要求"], filters["工作经验"])
 	mustHave, exclusions := parseMustHaveTokens(req.MustHave)
+	mustHave = mergeTokens(mustHave, descriptionSections.MustHave)
+	exclusions = mergeTokens(exclusions, descriptionSections.Exclusions)
 	return parsedRequirement{
 		Keyword:    keyword,
 		Location:   strings.TrimSpace(req.Location),
@@ -200,7 +204,7 @@ func parseHardRequirements(req *models.RecruitmentRequirement) parsedRequirement
 		Activity:   firstNonEmpty(filters["活跃度"], filters["活跃状态"]),
 		JobStatus:  filters["求职状态"],
 		MustHave:   mustHave,
-		Bonus:      recruitmentTokens(req.NiceHave),
+		Bonus:      mergeTokens(recruitmentTokens(req.NiceHave), descriptionSections.Bonus),
 		Exclusions: exclusions,
 		Major:      parseMajorRequirement(filters["专业要求"]),
 	}
@@ -655,6 +659,73 @@ func parseMajorRequirement(raw string) parsedMajor {
 	return major
 }
 
+type requirementDescriptionSections struct {
+	Body       string
+	MustHave   []string
+	Bonus      []string
+	Exclusions []string
+}
+
+func parseRequirementDescriptionSections(raw string) requirementDescriptionSections {
+	sections := requirementDescriptionSections{}
+	current := "body"
+	bodyLines := make([]string, 0)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if section, ok := requirementDescriptionHeading(line); ok {
+			current = section
+			continue
+		}
+		switch current {
+		case "must":
+			sections.MustHave = mergeTokens(sections.MustHave, requirementListTokens(line))
+		case "bonus":
+			sections.Bonus = mergeTokens(sections.Bonus, requirementListTokens(line))
+		case "exclude":
+			sections.Exclusions = mergeTokens(sections.Exclusions, requirementListTokens(line))
+		default:
+			bodyLines = append(bodyLines, strings.TrimLeft(line, "-*• "))
+		}
+	}
+	sections.Body = strings.Join(bodyLines, "\n")
+	return sections
+}
+
+func requirementDescriptionHeading(line string) (string, bool) {
+	heading := strings.TrimSpace(line)
+	heading = strings.Trim(heading, "#：:[]【】 ")
+	switch heading {
+	case "岗位描述", "职位描述", "需求描述", "描述":
+		return "body", true
+	case "重点要求", "必备要求", "核心要求", "MustHave":
+		return "must", true
+	case "加分项", "加分要求", "NiceHave":
+		return "bonus", true
+	case "排除项", "不考虑", "不要", "Exclusions":
+		return "exclude", true
+	default:
+		return "", false
+	}
+}
+
+func requirementListTokens(raw string) []string {
+	cleaned := strings.TrimSpace(strings.TrimLeft(raw, "-*• "))
+	parts := strings.FieldsFunc(cleaned, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == '、' || r == '\n' || r == '\t'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		token := cleanText(strings.TrimLeft(part, "-*• "))
+		if token != "" {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
 func parseMustHaveTokens(raw string) ([]string, []string) {
 	mustHave := make([]string, 0)
 	exclusions := make([]string, 0)
@@ -680,6 +751,26 @@ func parseMustHaveTokens(raw string) ([]string, []string) {
 		mustHave = append(mustHave, cleaned)
 	}
 	return mustHave, exclusions
+}
+
+func mergeTokens(groups ...[]string) []string {
+	out := make([]string, 0)
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, token := range group {
+			token = cleanText(token)
+			if token == "" {
+				continue
+			}
+			key := normalizeForMatch(token)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, token)
+		}
+	}
+	return out
 }
 
 var candidateAgePattern = regexp.MustCompile(`(\d{1,2})\s*岁`)
