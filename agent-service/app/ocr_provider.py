@@ -213,8 +213,9 @@ def parse_paddle_jsonl(raw: str) -> tuple[str, list[dict[str, Any]]]:
                 blocks.append(block)
             markdown = item.get("markdown") or {}
             markdown_text = str(markdown.get("text") or "").strip()
-            if markdown_text and not texts:
-                texts.append(markdown_text)
+            if markdown_text:
+                if not any(markdown_text == existing for existing in texts):
+                    texts.append(markdown_text)
                 block = {"type": "markdown", "text": truncate_text(markdown_text)}
                 if isinstance(markdown, dict):
                     block["keys"] = sorted(str(key) for key in markdown.keys())

@@ -115,6 +115,7 @@ func TestDesktopOCRParseChatUsesPaddleBlocksForBasics(t *testing.T) {
 		{"type": "paddle_block", "bbox": []any{20, 20, 260, 58}, "text": "\u738b\u6d4b\u8bd5 29\u5c81 \u672c\u79d1 6\u5e74\u7ecf\u9a8c"},
 		{"type": "paddle_block", "bbox": []any{20, 90, 420, 124}, "text": "\u671f\u671b\uff1a\u53a6\u95e8\u00b7\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406\u00b718-25K"},
 		{"type": "paddle_block", "bbox": []any{20, 170, 520, 205}, "text": "2020.06-\u81f3\u4eca \u793a\u4f8b\u79d1\u6280\u6709\u9650\u516c\u53f8\u00b7\u91c7\u8d2d\u4e3b\u7ba1"},
+		{"type": "paddle_block", "bbox": []any{20, 230, 520, 265}, "text": "2014-2018 \u793a\u4f8b\u5927\u5b66\u00b7\u7269\u6d41\u7ba1\u7406\u00b7\u672c\u79d1"},
 		{"type": "paddle_block", "bbox": []any{360, 60, 700, 96}, "text": "\u6c9f\u901a\u804c\u4f4d\uff1a\u4f9b\u5e94\u94fe\u91c7\u8d2d\u7ecf\u7406"},
 		{"type": "paddle_block", "bbox": []any{400, 180, 700, 220}, "text": "\u4f60\u597d\uff0c\u662f\u5426\u8fd8\u62db\u4eba\uff1f"},
 	}
@@ -125,6 +126,15 @@ func TestDesktopOCRParseChatUsesPaddleBlocksForBasics(t *testing.T) {
 	}
 	if got.Age != "29\u5c81" || got.Education != "\u672c\u79d1" || got.Experience != "6\u5e74\u7ecf\u9a8c" {
 		t.Fatalf("expected basics from block text, got age=%q education=%q experience=%q", got.Age, got.Education, got.Experience)
+	}
+	if got.School != "\u793a\u4f8b\u5927\u5b66" {
+		t.Fatalf("expected school from education history, got %q", got.School)
+	}
+	if got.CurrentCompany != "\u793a\u4f8b\u79d1\u6280\u6709\u9650\u516c\u53f8" || got.CurrentTitle != "\u91c7\u8d2d\u4e3b\u7ba1" {
+		t.Fatalf("expected current company/title, got company=%q title=%q", got.CurrentCompany, got.CurrentTitle)
+	}
+	if len(got.WorkHistory) != 1 {
+		t.Fatalf("expected one work history line, got %+v", got.WorkHistory)
 	}
 	if !strings.Contains(got.Profile, "\u5e74\u9f84\uff1a29\u5c81") || !strings.Contains(got.Profile, "\u5b66\u5386\uff1a\u672c\u79d1") {
 		t.Fatalf("profile should include parsed basics: %q", got.Profile)

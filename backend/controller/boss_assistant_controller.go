@@ -596,18 +596,22 @@ func bossCandidateKey(name string, role string, location string, profile string)
 }
 
 type desktopOCRParsedChat struct {
-	Importable  bool                             `json:"importable"`
-	Name        string                           `json:"name"`
-	Age         string                           `json:"age,omitempty"`
-	Education   string                           `json:"education,omitempty"`
-	Experience  string                           `json:"experience,omitempty"`
-	Role        string                           `json:"role"`
-	Profile     string                           `json:"profile"`
-	LastMessage string                           `json:"last_message"`
-	LastSender  string                           `json:"last_sender"`
-	Messages    []service.BossChatHistoryMessage `json:"messages"`
-	Confidence  string                           `json:"confidence"`
-	Warnings    []string                         `json:"warnings"`
+	Importable     bool                             `json:"importable"`
+	Name           string                           `json:"name"`
+	Age            string                           `json:"age,omitempty"`
+	Education      string                           `json:"education,omitempty"`
+	School         string                           `json:"school,omitempty"`
+	Experience     string                           `json:"experience,omitempty"`
+	CurrentCompany string                           `json:"current_company,omitempty"`
+	CurrentTitle   string                           `json:"current_title,omitempty"`
+	WorkHistory    []string                         `json:"work_history,omitempty"`
+	Role           string                           `json:"role"`
+	Profile        string                           `json:"profile"`
+	LastMessage    string                           `json:"last_message"`
+	LastSender     string                           `json:"last_sender"`
+	Messages       []service.BossChatHistoryMessage `json:"messages"`
+	Confidence     string                           `json:"confidence"`
+	Warnings       []string                         `json:"warnings"`
 }
 
 var desktopOCRTimeLinePattern = regexp.MustCompile(`^(\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2})(\s+\d{1,2}:\d{2})?$`)
@@ -743,6 +747,25 @@ func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []stri
 				parsed.Experience = match[1] + "\u5e74\u7ecf\u9a8c"
 			}
 		}
+		if parsed.School == "" {
+			if school := desktopOCRSchoolFromLine(line); school != "" {
+				parsed.School = school
+			}
+		}
+		if work := desktopOCRWorkFromLine(line); work != "" {
+			if !desktopOCRContainsAny(strings.Join(parsed.WorkHistory, "\n"), []string{work}) {
+				parsed.WorkHistory = append(parsed.WorkHistory, work)
+			}
+			if parsed.CurrentCompany == "" || strings.Contains(line, "\u81f3\u4eca") {
+				company, title := desktopOCRCompanyTitleFromLine(line)
+				if company != "" {
+					parsed.CurrentCompany = company
+				}
+				if title != "" {
+					parsed.CurrentTitle = title
+				}
+			}
+		}
 	}
 }
 
@@ -779,6 +802,83 @@ func desktopOCREducationFromLine(line string) string {
 	return ""
 }
 
+func desktopOCRSchoolFromLine(line string) string {
+	if !desktopOCRLooksLikeEducationHistoryLine(line) {
+		return ""
+	}
+	_, parts := desktopOCRDatedLineParts(line)
+	for _, part := range parts {
+		if desktopOCRContainsAny(part, []string{
+			"\u5927\u5b66", "\u5b66\u9662", "\u5b66\u6821", "\u9ad8\u4e2d", "\u4e2d\u5b66", "\u4e2d\u4e13",
+		}) {
+			return part
+		}
+	}
+	return ""
+}
+
+func desktopOCRWorkFromLine(line string) string {
+	if !desktopOCRLooksLikeWorkHistoryLine(line) {
+		return ""
+	}
+	return strings.TrimSpace(line)
+}
+
+func desktopOCRCompanyTitleFromLine(line string) (string, string) {
+	if !desktopOCRLooksLikeWorkHistoryLine(line) {
+		return "", ""
+	}
+	_, parts := desktopOCRDatedLineParts(line)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	company := parts[0]
+	title := ""
+	if len(parts) > 1 {
+		title = parts[len(parts)-1]
+	}
+	return company, title
+}
+
+func desktopOCRLooksLikeEducationHistoryLine(line string) bool {
+	if !desktopOCRLooksLikeExperienceLine(line) {
+		return false
+	}
+	return desktopOCRContainsAny(line, []string{
+		"\u5927\u5b66", "\u5b66\u9662", "\u5b66\u6821", "\u9ad8\u4e2d", "\u4e2d\u5b66", "\u4e2d\u4e13",
+		"\u672c\u79d1", "\u5927\u4e13", "\u7855\u58eb", "\u535a\u58eb",
+	})
+}
+
+func desktopOCRLooksLikeWorkHistoryLine(line string) bool {
+	if !desktopOCRLooksLikeExperienceLine(line) || desktopOCRLooksLikeEducationHistoryLine(line) {
+		return false
+	}
+	_, parts := desktopOCRDatedLineParts(line)
+	return len(parts) >= 1
+}
+
+func desktopOCRDatedLineParts(line string) (string, []string) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return "", nil
+	}
+	dateRange := fields[0]
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), dateRange))
+	rest = strings.ReplaceAll(rest, "\u00b7", "|")
+	rest = strings.ReplaceAll(rest, "\u30fb", "|")
+	rest = strings.ReplaceAll(rest, "\u2022", "|")
+	rawParts := strings.Split(rest, "|")
+	parts := []string{}
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return dateRange, parts
+}
+
 func desktopOCRProfileWithBasics(parsed desktopOCRParsedChat, profile string) string {
 	lines := []string{}
 	if parsed.Age != "" {
@@ -787,8 +887,17 @@ func desktopOCRProfileWithBasics(parsed desktopOCRParsedChat, profile string) st
 	if parsed.Education != "" {
 		lines = append(lines, "\u5b66\u5386\uff1a"+parsed.Education)
 	}
+	if parsed.School != "" {
+		lines = append(lines, "\u5b66\u6821\uff1a"+parsed.School)
+	}
 	if parsed.Experience != "" {
 		lines = append(lines, "\u7ecf\u9a8c\uff1a"+parsed.Experience)
+	}
+	if parsed.CurrentCompany != "" {
+		lines = append(lines, "\u6700\u8fd1\u516c\u53f8\uff1a"+parsed.CurrentCompany)
+	}
+	if parsed.CurrentTitle != "" {
+		lines = append(lines, "\u6700\u8fd1\u804c\u4f4d\uff1a"+parsed.CurrentTitle)
 	}
 	if strings.TrimSpace(profile) != "" {
 		lines = append(lines, strings.TrimSpace(profile))
@@ -1065,11 +1174,17 @@ func desktopOCRUsefulLines(profile string, limit int) []string {
 		"同意": true, "拒绝": true, "求简历": true, "换电话": true, "换微信": true, "我知道了": true, "已读": true,
 		"沟通": true, "职位": true, "简历": true, "常用语": true, "表情": true, "发送": true, "更多": true,
 	}
+	seen := map[string]bool{}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || ignored[line] || desktopOCRIsControlLine(line) || desktopOCRIsStrictNoiseLine(line) || desktopOCRIsNoiseLine(line) {
 			continue
 		}
+		key := strings.Join(strings.Fields(line), " ")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		useful = append(useful, line)
 	}
 	if limit > 0 && len(useful) > limit {
