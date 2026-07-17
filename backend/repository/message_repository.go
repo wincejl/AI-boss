@@ -39,7 +39,7 @@ func (r *MessageRepository) DeleteByIDs(ids []uint) error {
 // ListByConversationID 按时间顺序查询会话中的全部消息。
 func (r *MessageRepository) ListByConversationID(conversationID uint) ([]models.Message, error) {
 	var messages []models.Message
-	if err := r.db.Where("conversation_id = ?", conversationID).Order("created_at asc").Find(&messages).Error; err != nil {
+	if err := r.db.Where("conversation_id = ?", conversationID).Order("created_at asc, id asc").Find(&messages).Error; err != nil {
 		return nil, err
 	}
 	return messages, nil
@@ -49,7 +49,7 @@ func (r *MessageRepository) ListByConversationID(conversationID uint) ([]models.
 func (r *MessageRepository) LatestByConversationID(conversationID uint) (*models.Message, error) {
 	var message models.Message
 	if err := r.db.Where("conversation_id = ?", conversationID).
-		Order("created_at desc").
+		Order("created_at desc, id desc").
 		First(&message).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil

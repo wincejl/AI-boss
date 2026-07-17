@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -707,8 +709,8 @@ func desktopOCRParseChat(index int, raw string, boxes []map[string]any) desktopO
 }
 
 func desktopOCRTextFromBlocks(raw string, boxes []map[string]any) string {
-	lines := []string{}
-	for _, box := range boxes {
+	blockLines := []desktopOCRBlockLine{}
+	for index, box := range boxes {
 		if !strings.EqualFold(strings.TrimSpace(anyString(box["type"])), "paddle_block") {
 			continue
 		}
@@ -716,12 +718,132 @@ func desktopOCRTextFromBlocks(raw string, boxes []map[string]any) string {
 		if text == "" {
 			continue
 		}
-		lines = append(lines, text)
+		x, y, ok := desktopOCRBlockOrigin(box)
+		blockLines = append(blockLines, desktopOCRBlockLine{
+			Text:  text,
+			X:     x,
+			Y:     y,
+			Index: index,
+			HasXY: ok,
+		})
 	}
-	if len(lines) == 0 {
+	if len(blockLines) == 0 {
 		return raw
 	}
+	sort.SliceStable(blockLines, func(i, j int) bool {
+		left := blockLines[i]
+		right := blockLines[j]
+		if left.HasXY && right.HasXY {
+			if absInt(left.Y-right.Y) > 8 {
+				return left.Y < right.Y
+			}
+			if absInt(left.X-right.X) > 8 {
+				return left.X < right.X
+			}
+		}
+		return left.Index < right.Index
+	})
+	lines := []string{}
+	seen := map[string]bool{}
+	for _, block := range blockLines {
+		for _, line := range strings.Split(block.Text, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			key := strings.Join(strings.Fields(line), " ")
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			lines = append(lines, line)
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key := strings.Join(strings.Fields(line), " ")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		lines = append(lines, line)
+	}
 	return strings.Join(lines, "\n")
+}
+
+type desktopOCRBlockLine struct {
+	Text  string
+	X     int
+	Y     int
+	Index int
+	HasXY bool
+}
+
+func desktopOCRBlockOrigin(box map[string]any) (int, int, bool) {
+	bbox, ok := box["bbox"]
+	if !ok {
+		return 0, 0, false
+	}
+	values, ok := anyNumberSlice(bbox)
+	if !ok || len(values) < 2 {
+		return 0, 0, false
+	}
+	return int(values[0]), int(values[1]), true
+}
+
+func anyNumberSlice(value any) ([]float64, bool) {
+	switch typed := value.(type) {
+	case []float64:
+		return typed, true
+	case []int:
+		out := make([]float64, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, float64(item))
+		}
+		return out, true
+	case []any:
+		out := make([]float64, 0, len(typed))
+		for _, item := range typed {
+			number, ok := anyFloat(item)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, number)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func anyFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func desktopOCRExtractCandidateBasics(parsed *desktopOCRParsedChat, lines []string) {

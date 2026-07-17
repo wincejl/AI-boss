@@ -538,6 +538,8 @@ func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID
 	}
 	var latest *models.Message
 	newVisitorMessages := []*models.Message{}
+	importedAt := time.Now()
+	importedIndex := 0
 	for _, item := range items {
 		content := cleanBossHistoryContent(item.Content)
 		if content == "" {
@@ -557,6 +559,8 @@ func (s *ConversationService) importBossChatHistory(conversationID uint, ownerID
 			ChatMode:       "human",
 			IsRead:         senderIsAgent,
 		}
+		msg.CreatedAt = importedAt.Add(time.Duration(importedIndex) * time.Millisecond)
+		importedIndex++
 		if senderIsAgent {
 			msg.SenderID = ownerID
 		}

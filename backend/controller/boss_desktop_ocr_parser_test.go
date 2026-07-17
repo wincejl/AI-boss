@@ -140,3 +140,27 @@ func TestDesktopOCRParseChatUsesPaddleBlocksForBasics(t *testing.T) {
 		t.Fatalf("profile should include parsed basics: %q", got.Profile)
 	}
 }
+
+func TestDesktopOCRTextFromBlocksSortsByLayoutAndKeepsRawFallback(t *testing.T) {
+	boxes := []map[string]any{
+		{"type": "paddle_block", "bbox": []any{700, 300, 900, 330}, "text": "\u4f60\u597d\u554a\uff0c\u53ef\u4ee5\u804a\u4e00\u804a~"},
+		{"type": "paddle_block", "bbox": []any{20, 20, 260, 58}, "text": "\u738b\u6d4b\u8bd5 29\u5c81 \u672c\u79d1 6\u5e74\u7ecf\u9a8c"},
+		{"type": "paddle_block", "bbox": []any{400, 200, 700, 240}, "text": "\u4f60\u597d\uff0c\u662f\u5426\u8fd8\u62db\u4eba\uff1f"},
+	}
+	raw := strings.Join([]string{
+		"\u738b\u6d4b\u8bd5 29\u5c81 \u672c\u79d1 6\u5e74\u7ecf\u9a8c",
+		"2014-2018 \u793a\u4f8b\u5927\u5b66\u00b7\u7269\u6d41\u7ba1\u7406\u00b7\u672c\u79d1",
+	}, "\n")
+
+	got := desktopOCRTextFromBlocks(raw, boxes)
+	nameIndex := strings.Index(got, "\u738b\u6d4b\u8bd5")
+	candidateMsgIndex := strings.Index(got, "\u662f\u5426\u8fd8\u62db\u4eba")
+	agentMsgIndex := strings.Index(got, "\u53ef\u4ee5\u804a\u4e00\u804a")
+	schoolIndex := strings.Index(got, "\u793a\u4f8b\u5927\u5b66")
+	if !(nameIndex >= 0 && candidateMsgIndex > nameIndex && agentMsgIndex > candidateMsgIndex) {
+		t.Fatalf("expected layout-sorted text, got %q", got)
+	}
+	if schoolIndex < 0 {
+		t.Fatalf("expected raw fallback line to be preserved, got %q", got)
+	}
+}
