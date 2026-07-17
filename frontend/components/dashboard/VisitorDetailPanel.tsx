@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { parseBossConversation } from "./bossConversation";
 
 type ContactField = "email" | "phone" | "notes";
 type ContactUpdatePayload = Partial<Record<ContactField, string>>;
@@ -35,6 +36,18 @@ const displayValue = (value?: string | null, placeholder = "暂未填写") => {
   }
   const trimmed = value.trim();
   return trimmed || placeholder;
+};
+
+const renderInfoRow = (label: string, value: string) => {
+  if (!value.trim()) {
+    return null;
+  }
+  return (
+    <div>
+      <div className="text-gray-500 mb-1 text-xs">{label}</div>
+      <div className="text-xs text-gray-700 break-words">{value}</div>
+    </div>
+  );
 };
 
 export function VisitorDetailPanel({
@@ -74,6 +87,9 @@ export function VisitorDetailPanel({
   const isOnline = isVisitorOnline(
     detail?.last_seen_at ?? conversation.last_seen_at ?? null
   );
+  const bossInfo = parseBossConversation(conversation, detail);
+  const panelTitle = bossInfo.displayName || `访客 #${conversation.visitor_id}`;
+  const panelSubtitle = bossInfo.isBoss ? bossInfo.subtitle : "";
 
   const getFieldValue = (field: ContactField) => {
     if (!detail) {
@@ -139,13 +155,14 @@ export function VisitorDetailPanel({
             className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0"
             style={{ backgroundColor: avatarColor }}
           >
-            {conversation.visitor_id.toString().slice(-2)}
+            {bossInfo.isBoss ? panelTitle.slice(0, 2) : conversation.visitor_id.toString().slice(-2)}
           </div>
           <div>
             <div className="font-semibold text-foreground text-sm">
-              访客 #{conversation.visitor_id}
+              {panelTitle}
             </div>
             <div className="text-xs text-muted-foreground">
+              {panelSubtitle ? <span>{panelSubtitle} · </span> : null}
               {isOnline ? (
                 <span className="text-green-600">● 在线</span>
               ) : (
@@ -199,6 +216,34 @@ export function VisitorDetailPanel({
       <Separator className="absolute bottom-0 left-0 right-0" />
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-auto">
+        {bossInfo.isBoss && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold">候选人信息</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="space-y-3 text-sm">
+                {renderInfoRow("沟通岗位", bossInfo.role)}
+                {renderInfoRow("年龄", bossInfo.age)}
+                {renderInfoRow("学历", bossInfo.education)}
+                {renderInfoRow("学校", bossInfo.school)}
+                {renderInfoRow("经验", bossInfo.experience)}
+                {renderInfoRow("最近公司", bossInfo.currentCompany)}
+                {renderInfoRow("最近职位", bossInfo.currentTitle)}
+                {renderInfoRow("期望", bossInfo.expectation)}
+                {bossInfo.profileLines.length > 0 ? (
+                  <div>
+                    <div className="text-gray-500 mb-1 text-xs">OCR资料</div>
+                    <div className="text-xs text-gray-700 whitespace-pre-wrap break-words">
+                      {bossInfo.profileLines.join("\n")}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* 联系信息区域 */}
         <Card>
           <CardHeader className="pb-3">

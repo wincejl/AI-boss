@@ -30,6 +30,7 @@ import { useSoundNotification } from "@/hooks/useSoundNotification";
 import { usePageTitle } from "@/hooks/usePageTitle";
 import { reportFrontendLog } from "@/features/agent/services/systemLogApi";
 import { useI18n } from "@/lib/i18n/provider";
+import { parseBossConversation } from "./bossConversation";
 
 export function DashboardShell() {
   const { t } = useI18n();
@@ -140,11 +141,12 @@ export function DashboardShell() {
       ) ?? null,
     [conversations, selectedConversationId]
   );
-  const isBossConversation = selectedConversation?.referrer?.startsWith("boss://chat/") ?? false;
-  const selectedConversationTitle = useMemo(() => {
-    if (!isBossConversation) return undefined;
-    return selectedConversation?.notes?.match(/^BOSS候选人[:：]\s*(.+)$/m)?.[1]?.trim() || undefined;
-  }, [isBossConversation, selectedConversation?.notes]);
+  const selectedBossInfo = useMemo(
+    () => parseBossConversation(selectedConversation),
+    [selectedConversation]
+  );
+  const isBossConversation = selectedBossInfo.isBoss;
+  const selectedConversationTitle = selectedBossInfo.displayName || undefined;
 
   useEffect(() => {
     setMessageInput("");
